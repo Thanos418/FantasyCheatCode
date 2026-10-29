@@ -221,7 +221,8 @@
       id: isRoster ? (entry.playerId != null ? entry.playerId : pl.id) : (entry.id != null ? entry.id : pl.id),
       name: pl.fullName || (first + ' ' + last).trim(), first, last,
       proTeamId: pl.proTeamId, posId: pl.defaultPositionId, pos: posList.join('/'), eligible,
-      injury: (isRoster && entry.injuryStatus) || pl.injuryStatus || 'ACTIVE',
+      // Live ESPN roster entries say 'NORMAL' while the player carries the real status (OUT, DAY_TO_DAY, ...).
+      injury: [pl.injuryStatus, isRoster ? entry.injuryStatus : null].find((x) => x && x !== 'ACTIVE' && x !== 'NORMAL') || 'ACTIVE',
       slot: isRoster && entry.lineupSlotId != null ? entry.lineupSlotId : null,
       status, waiverDate: !isRoster && entry.waiverProcessDate ? entry.waiverProcessDate : null,
       own: { pct: own.percentOwned != null ? own.percentOwned : null, chg: own.percentChange != null ? own.percentChange : null },

@@ -755,3 +755,12 @@ test('factors.js has sane values for every team', () => {
   assert.ok(F.b2bPlay > 0.7 && F.b2bPlay < 1);
   assert.ok(F.b2bOutput > 0.9 && F.b2bOutput < 1.1);
 });
+
+test('normPlayer: live ESPN roster entry says NORMAL, the player carries the status', () => {
+  const out = M.normPlayer({ playerId: 7, lineupSlotId: 13, injuryStatus: 'NORMAL', playerPoolEntry: { player: rawPlayer(7, 'Jay Doe', 8, [4, 9, 10, 11, 12, 13], [], 'OUT') } });
+  assert.strictEqual(out.injury, 'OUT');
+  const dtd = M.normPlayer({ playerId: 8, lineupSlotId: 1, injuryStatus: 'NORMAL', playerPoolEntry: { player: rawPlayer(8, 'Kay Doe', 8, [1, 5, 11, 12, 13], [], 'DAY_TO_DAY') } });
+  assert.strictEqual(dtd.injury, 'DAY_TO_DAY');
+  const ok = M.normPlayer({ playerId: 9, lineupSlotId: 1, injuryStatus: 'NORMAL', playerPoolEntry: { player: rawPlayer(9, 'Lee Doe', 8, [1, 5, 11, 12, 13]) } });
+  assert.strictEqual(ok.injury, 'ACTIVE');
+});
