@@ -429,10 +429,19 @@
     return '' +
       '<p class="wp-add-n"><strong>' + esc(fa.name) + '</strong> <span class="wp-meta">' + recMeta(rec) + '</span>' + (rec.waiver ? ' ' + waiverChip(fa) : '') + '</p>' +
       '<p class="wp-add-f">' + esc(facts) + '</p>' +
-      '<p class="wp-add-d">' + drop + ' <span class="wp-gain ' + (rec.gain > 0 ? 'good' : '') + '">' + sgn1(rec.gain) + ' FP</span>' +
+      '<p class="wp-add-d">' + drop + ' <span class="wp-gain ' + (rec.gain > 0 ? 'good' : '') + '">' + sgn1(rec.gain) + ' FP this week</span>' +
       (rec.upgrade ? '' : ' <span class="wp-dim" title="Per game he is projected below the player he replaces. The gain comes from extra games in your lineup.">not an upgrade</span>') +
       winTag(rec.gain) +
-      '</p>';
+      '</p>' + longTermHTML(rec);
+  }
+
+  // Next weeks: what the move gains or costs after this week, and the total that ranks the moves.
+  function longTermHTML(rec) {
+    if (!isNum(rec.longTerm)) return '';
+    const wk = rec.ltWeeks || 3;
+    const who = rec.drop ? 'keeping ' + (rec.drop.last || rec.drop.name) : 'an empty spot';
+    return '<p class="wp-add-lt" title="Per-game projections over an average ' + wk + ' weeks of games (about ' + Math.round(wk * 82 / 24) + ')">Next ' + wk + ' weeks <span class="' + (rec.longTerm > 0.049 ? 'good' : rec.longTerm < -0.049 ? 'bad' : '') + '">' + sgn1(rec.longTerm) + ' FP</span> vs ' + esc(who) +
+      ' · total <b class="' + (rec.net > 0.5 ? 'good' : 'bad') + '">' + sgn1(rec.net) + '</b></p>';
   }
 
   function nightHTML(vm, d) {
@@ -467,7 +476,12 @@
       const dayBlocked = today && adds.perDay && adds.limit > 0 && adds.todayUsed >= adds.limit;
       if (recs.length) {
         const alts = recs.slice(1);
-        addBlock = '<div class="wp-add' + (dayBlocked ? ' is-blocked' : '') + '"><p class="wp-add-k">Best add</p>' + recBodyHTML(recs[0], vm) + '</div>';
+        const top = recs[0];
+        const label = top.spend ? 'Spend your add here' : top.worth === false ? 'Hold' : 'Best add';
+        const why = top.worth === false
+          ? '<p class="wp-add-why">The best pickup helps this week but costs more over the next ' + (top.ltWeeks || 3) + ' weeks. Only for this week:</p>'
+          : '';
+        addBlock = '<div class="wp-add' + (dayBlocked ? ' is-blocked' : '') + (top.spend ? ' is-spend' : '') + (top.worth === false ? ' is-hold' : '') + '"><p class="wp-add-k">' + label + '</p>' + why + recBodyHTML(top, vm) + '</div>';
         if (alts.length) {
           addBlock += '<details class="wp-alts"><summary>If not him, ' + alts.length + ' more ' + (alts.length === 1 ? 'option' : 'options') + '</summary><ul>' +
             alts.map((r) => '<li>' + recBodyHTML(r, vm) + '</li>').join('') + '</ul></details>';
@@ -713,7 +727,7 @@
     const head = '<div class="wp-bhead" aria-hidden="true">' +
       '<span class="bh-p">Player</span><span class="bh-o">Rostered</span><span class="bh-f">FP a game</span>' +
       '<span class="bh-d">' + dayCols.map((d) => '<i class="' + (d.kind === 'today' ? 'is-today' : '') + '">' + esc(d.dow.slice(0, 2)) + '</i>').join('') + '</span>' +
-      '<span class="bh-x">Best drop</span><span class="bh-g">Gain</span></div>';
+      '<span class="bh-x">Best drop</span><span class="bh-g">Value</span></div>';
 
     const list = rows.map((r) => {
       const fa = r.fa;
@@ -733,7 +747,7 @@
         '<div class="bc-f">' + f1(r.faProj && r.faProj.fp) + '</div>' +
         '<div class="bc-d" role="img" aria-label="' + esc(plural(r.gamesLeft || 0, 'game') + ' left') + '"><span class="wp-kps">' + pips + '</span><span class="bc-dn">' + (r.gamesLeft || 0) + ' left</span></div>' +
         '<div class="bc-x">' + (r.drop ? 'Drop <b>' + esc(r.drop.last || r.drop.name) + '</b>' : '<span class="wp-dim">Open spot</span>') + '</div>' +
-        '<div class="bc-g"><b class="' + (r.gain > 0 ? 'good' : '') + '">' + sgn1(r.gain) + '</b><small>' + (best ? 'from ' + esc(best) : '') + (r.upgrade ? '' : (best ? ' · ' : '') + 'not an upgrade') + '</small>' + winTag(r.gain) + '</div>' +
+        '<div class="bc-g"><b class="' + (isNum(r.net) ? (r.net > 0.5 ? 'good' : 'bad') : (r.gain > 0 ? 'good' : '')) + '">' + sgn1(isNum(r.net) ? r.net : r.gain) + '</b><small>' + sgn1(r.gain) + ' this week' + (isNum(r.longTerm) ? ' · ' + sgn1(r.longTerm) + ' later' : '') + (best ? ' · from ' + esc(best) : '') + '</small>' + winTag(r.gain) + '</div>' +
         '</li>';
     }).join('');
 
@@ -747,7 +761,7 @@
 
     return '' +
       '<div class="wp-sec-h wp-sec-h--split"><div><h2 id="h-board">Streaming board</h2>' +
-      '<p>Free agents ranked by points gained over the rest of the week. Orange pips are nights he would start for you.</p></div>' +
+      '<p>Free agents ranked by value: points gained this week plus how much better or worse he is than the player you drop over the next ' + ((vm.recs && vm.recs.ltWeeks) || 3) + ' weeks. Orange pips are nights he would start for you.</p></div>' +
       '<div class="wp-pills" role="group" aria-label="Position">' + POS_FILTERS.map(pill).join('') + '</div></div>' +
       (rows.length ? '<div class="wp-board" style="--days:' + dayCols.length + '">' + head + '<ol class="wp-brows">' + list + '</ol></div>' : empty) +
       '<p class="wp-legend wp-legend--board"><span class="lg"><i class="wp-kp k-start"></i>would start</span><span class="lg"><i class="wp-kp k-squeezed"></i>game, lineup full</span><span class="lg"><i class="wp-kp k-none"></i>no game</span></p>';

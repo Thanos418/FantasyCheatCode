@@ -623,8 +623,10 @@ test('computeWeek: adds from transactions', () => {
   assert.deepStrictEqual(vm2.adds.pending, []);
 });
 
+const noClaim = (ctx) => Object.assign(ctx, { transactions: ctx.transactions.filter((t) => t.status !== 'PENDING') });
+
 test('computeWeek: recommendations fill open slots and respect waivers / daily limit', () => {
-  const vm = M.computeWeek(buildCtx());
+  const vm = M.computeWeek(noClaim(buildCtx())); // without the pending claim, so Bo Seven (7) can be dropped
   // today's add already used -> no rec for today
   assert.deepStrictEqual(vm.recs.byDay[9], []);
   const r10 = vm.recs.byDay[10];
@@ -662,7 +664,7 @@ test('computeWeek: recommendations fill open slots and respect waivers / daily l
   const b202 = b.find((x) => x.fa.id === 202);
   assert.strictEqual(b202.bestSp, 11);
   assert.deepStrictEqual(b202.days, { 11: 'start' });
-  for (let i = 1; i < b.length; i++) assert.ok(b[i - 1].gain >= b[i].gain);
+  for (let i = 1; i < b.length; i++) assert.ok(b[i - 1].net >= b[i].net); // ranked by value (this week + later)
 });
 
 test('computeWeek: with today\'s add unused, today can be recommended', () => {
@@ -763,4 +765,68 @@ test('normPlayer: live ESPN roster entry says NORMAL, the player carries the sta
   assert.strictEqual(dtd.injury, 'DAY_TO_DAY');
   const ok = M.normPlayer({ playerId: 9, lineupSlotId: 1, injuryStatus: 'NORMAL', playerPoolEntry: { player: rawPlayer(9, 'Lee Doe', 8, [1, 5, 11, 12, 13]) } });
   assert.strictEqual(ok.injury, 'ACTIVE');
+});
+
+const GPW = 82 / 24;
+
+test('computeWeek: recommendations carry long-term value, net = gain + longTerm, sorted by net', () => {
+  const vm = M.computeWeek(buildCtx());
+  const all = [].concat(...Object.values(vm.recs.byDay));
+  assert.ok(all.length > 0);
+  all.forEach((r) => {
+    const want = (r.faProj.fp - (r.dropProj ? r.dropProj.fp : 0)) * GPW * 3;
+    assert.ok(Math.abs(r.longTerm - want) < 1e-9);
+    assert.ok(Math.abs(r.net - (r.gain + r.longTerm)) < 1e-9);
+    assert.strictEqual(r.worth, r.net > 0.5);
+    assert.strictEqual(r.ltWeeks, 3);
+  });
+  Object.values(vm.recs.byDay).forEach((list) => {
+    for (let i = 1; i < list.length; i++) assert.ok(list[i - 1].net >= list[i].net - 1e-9);
+  });
+  const b = vm.recs.board;
+  for (let i = 1; i < b.length; i++) assert.ok(b[i - 1].net >= b[i].net - 1e-9);
+});
+
+test('computeWeek: exactly one "spend your add here", on the best worthwhile move', () => {
+  const vm = M.computeWeek(buildCtx());
+  const tops = Object.values(vm.recs.byDay).map((l) => l[0]).filter(Boolean);
+  const spends = tops.filter((r) => r.spend);
+  assert.strictEqual(spends.length, 1);
+  assert.strictEqual(vm.recs.spend, spends[0]);
+  tops.filter((r) => r.worth).forEach((r) => assert.ok(spends[0].net >= r.net - 1e-9));
+});
+
+test('computeWeek: a pickup worse than everyone you could drop is a hold', () => {
+  const ctx = noClaim(buildCtx());
+  // 2 FP a game: fills open slots this week (small gain) but is worse than every drop candidate
+  ctx.freeAgents = [M.normPlayer({ id: 301, status: 'FREEAGENT', player: rawPlayer(301, 'Low Free', 4, CE, seasonStats(2027, { proj: 2 })) })];
+  const vm = M.computeWeek(ctx);
+  const r10 = vm.recs.byDay[10][0];
+  assert.ok(r10, 'the week-only move is still listed');
+  assert.ok(r10.gain > 0.5);
+  assert.ok(r10.longTerm < 0);
+  assert.strictEqual(r10.worth, false);
+  assert.strictEqual(r10.spend, undefined);
+  assert.strictEqual(vm.recs.spend, null);
+});
+
+test('computeWeek: longTermWeeks 0 ranks by this week only', () => {
+  const ctx = noClaim(buildCtx());
+  ctx.longTermWeeks = 0;
+  const vm = M.computeWeek(ctx);
+  [].concat(...Object.values(vm.recs.byDay)).forEach((r) => {
+    assert.strictEqual(r.longTerm, 0);
+    assert.strictEqual(r.net, r.gain);
+  });
+  assert.strictEqual(vm.recs.byDay[10][0].drop.id, 7);
+});
+
+test('computeWeek: a pending claim is respected: its drop stays, its pickup is not suggested again', () => {
+  const vm = M.computeWeek(buildCtx());
+  // fixture: pending WAIVER adds 202 (Wave Waiver) and drops 7 (Bo Seven)
+  const all = [].concat(...Object.values(vm.recs.byDay));
+  assert.ok(all.length > 0);
+  all.forEach((r) => assert.ok(!r.drop || r.drop.id !== 7));
+  assert.ok(!all.some((r) => r.fa.id === 202));
+  assert.ok(!vm.recs.board.some((r) => r.fa.id === 202));
 });

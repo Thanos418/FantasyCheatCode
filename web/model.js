@@ -314,6 +314,8 @@
 
   /* ---------------------------------------------------------- computeWeek */
 
+  const GAMES_PER_WEEK = 82 / 24;
+
   // Expected points multiplier for one game: venue, opponent and the second night of a back-to-back
   // (output and chance of playing). factors = WPFactors or null (then mult 1). play = chance of playing.
   function gameMult(sched, factors, proTeamId, sp) {
@@ -559,7 +561,7 @@
     const adds = { used, weekLimit, perDay: league.acq.perDay, limit: lim, todayUsed, pending };
 
     // ---- recommendations
-    const recs = { byDay: {}, board: [], note: null };
+    const recs = { byDay: {}, board: [], note: null, spend: null };
     const remDays = sps.filter((sp) => kindOf(sp) !== 'past');
     const faAll = ctx.freeAgents || [];
     if (remDays.length && myRaw.current.length) {
@@ -581,14 +583,24 @@
         baseV[sp] = baseRes[sp].total;
         baseChosen[sp] = new Set(baseRes[sp].chosen.map((c) => c.key));
       });
-      const dropCands = roster.slice().sort((a, b) => projOf(a).fp - projOf(b).fp).slice(0, 4);
+      // A pending claim is a move already made: its pickup is not suggested again and its drop stays
+      // (dropping him now would break the claim).
+      const claimDrops = new Set(pending.filter((x) => x.drop).map((x) => x.drop.id));
+      const claimAdds = new Set(pending.map((x) => x.add.id));
+      const dropCands = roster.filter((p) => !claimDrops.has(p.id)).sort((a, b) => projOf(a).fp - projOf(b).fp).slice(0, 4);
       const options = dropCands.slice();
       if (roster.length < league.starters + league.benchCount) options.push(null);
 
       const minAdd = (cur >= remDays[0] && league.acq.perDay && lim > 0 && todayUsed >= lim) ? cur + 1 : -Infinity;
+
+      // Long-term side of a move: who is the better player after this week. Per-game projection times
+      // an average week of games (82 games over ~24 weeks) for the next ltWeeks weeks. Later schedules
+      // are left out on purpose: those weeks get streamed again. longTerm = pickup minus dropped player.
+      const ltWeeks = ctx.longTermWeeks != null ? ctx.longTermWeeks : 3;
+      const ltOf = (p) => (p ? projOf(p).fp * GAMES_PER_WEEK * ltWeeks : 0);
       const pool = [];
       faAll.forEach((f) => {
-        if (isOut(f)) return;
+        if (isOut(f) || claimAdds.has(f.id)) return;
         const gd = remDays.filter((sp) => unstartedGame(f, sp));
         if (!gd.length) return;
         pool.push({ f, gd, score: gd.reduce((t, sp) => t + expFp(f, sp), 0) });
@@ -633,16 +645,18 @@
               if (o.fCh[s]) reach++;
               if (o.rKey != null && baseChosen[s].has(o.rKey)) lost++;
             });
-            if (!best || gain > best.gain + 1e-9) best = { o, gain, reach, lost };
+            const longTerm = ltOf(f) - ltOf(o.r), net = gain + longTerm;
+            if (!best || net > best.net + 1e-9) best = { o, gain, reach, lost, longTerm, net };
           });
           if (!best) return;
           const rec = {
             sp: d, fa: f, faProj: projOf(f), drop: best.o.r, dropProj: best.o.r ? projOf(best.o.r) : null,
-            gain: best.gain, gamesReach: best.reach, gamesLost: best.lost,
+            gain: best.gain, longTerm: best.longTerm, net: best.net, ltWeeks, worth: best.net > 0.5,
+            gamesReach: best.reach, gamesLost: best.lost,
             upgrade: best.o.r ? projOf(f).fp >= projOf(best.o.r).fp : true, waiver: f.status === 'WAIVERS',
           };
           byDayAll[d].push(rec);
-          if (!fBest || rec.gain > fBest.rec.gain + 1e-9) fBest = { rec, o: best.o };
+          if (!fBest || rec.net > fBest.rec.net + 1e-9) fBest = { rec, o: best.o };
         });
         if (fBest && fBest.rec.gain > 0) {
           const dmap = {};
@@ -652,14 +666,25 @@
           });
           board.push({
             fa: f, faProj: fBest.rec.faProj, gamesLeft: e.gd.length, days: dmap, bestSp: fBest.rec.sp,
-            drop: fBest.rec.drop, gain: fBest.rec.gain, upgrade: fBest.rec.upgrade,
+            drop: fBest.rec.drop, gain: fBest.rec.gain, longTerm: fBest.rec.longTerm, net: fBest.rec.net,
+            worth: fBest.rec.worth, upgrade: fBest.rec.upgrade,
           });
         }
       });
+      // Moves that help this week, best value (this week + next weeks) first. One "spend your add here":
+      // the best worthwhile move of the week; nights whose best move is not worth it are a hold.
       remDays.forEach((d) => {
-        recs.byDay[d] = byDayAll[d].filter((r) => r.gain > 0.5).sort((a, b) => b.gain - a.gain).slice(0, 3);
+        recs.byDay[d] = byDayAll[d].filter((r) => r.gain > 0.5).sort((a, b) => b.net - a.net || b.gain - a.gain).slice(0, 3);
       });
-      board.sort((a, b) => b.gain - a.gain);
+      let spend = null;
+      remDays.forEach((d) => {
+        const r = recs.byDay[d][0];
+        if (r && r.worth && (!spend || r.net > spend.net + 1e-9)) spend = r;
+      });
+      if (spend) spend.spend = true;
+      recs.spend = spend;
+      recs.ltWeeks = ltWeeks;
+      board.sort((a, b) => b.net - a.net || b.gain - a.gain);
       recs.board = board.slice(0, 25);
     }
 

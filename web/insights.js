@@ -612,12 +612,19 @@
         return '';
       };
       const tag = [abbrevOf(rec.fa.proTeamId), rec.fa.pos].filter(Boolean).join(', ');
-      let s = 'Best add today: ' + rec.fa.name + (tag ? ' (' + tag + ')' : '') +
+      const head = rec.worth === false ? 'Hold today. This week only: ' : rec.spend ? 'Spend your add today: ' : 'Best add today: ';
+      let s = head + rec.fa.name + (tag ? ' (' + tag + ')' : '') +
         (rec.drop ? ', drop ' + rec.drop.name : ', no drop needed') + ', +' + f1(rec.gain) + ' FP this week';
       const dw = winDelta(wp, rec.gain);
       if (dw !== null && Math.abs(dw) >= 0.005) s += ', ' + (dw > 0 ? '+' : '-') + Math.round(Math.abs(dw) * 100) + '% win chance';
+      if (isNum(rec.longTerm)) s += ', ' + (rec.longTerm >= 0 ? '+' : '') + f1(rec.longTerm) + ' FP over the next ' + (rec.ltWeeks || 3) + ' weeks';
       if (rec.waiver) s += ' (waiver claim)';
       lines.push(s);
+      const sp = vm.recs && vm.recs.spend;
+      if (sp && sp !== rec && sp.fa) {
+        const day = (vm.days || []).find((x) => x.sp === sp.sp);
+        lines.push('Best night for an add this week: ' + (day ? day.dow : 'sp ' + sp.sp) + ', ' + sp.fa.name + (sp.drop ? ' for ' + sp.drop.name : '') + ', total ' + (sp.net >= 0 ? '+' : '') + f1(sp.net) + ' FP');
+      }
     } else {
       const note = vm.recs && vm.recs.note;
       lines.push('No add worth it today' + (note ? ' (' + note + ')' : ''));

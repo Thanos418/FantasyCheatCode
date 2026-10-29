@@ -14,6 +14,8 @@ A local week planner for an ESPN fantasy basketball points league. It replicates
 
 Win chance comes from simulating the rest of the week 5,000 times with per-game spread, rest days and day-to-day players.
 
+Add suggestions weigh two things: points gained this week (extra games in your lineup) and how much better or worse the pickup is than the player you drop over the next 3 weeks (per-game projections times an average week of games). The week's best move is marked "Spend your add here"; a night whose best move only helps this week is a "Hold". Pending waiver claims are respected: their pickup is not suggested again and their drop is never suggested.
+
 ## Requirements
 
 - Python 3.8 or newer. Nothing else to install: the server uses only the standard library and the front end has no build step.

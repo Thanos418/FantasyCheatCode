@@ -675,3 +675,12 @@ body {
   #app *, #app *::before, #app *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
   #app .wp-pip.p-load { opacity: 0.7; }
 }
+
+/* Add value: long-term line, spend / hold */
+#app .wp-add-lt { margin: 4px 0 0; font-size: 12px; color: var(--ink-2); font-variant-numeric: tabular-nums; }
+#app .wp-add-lt .good, #app .wp-add-lt b.good { color: var(--good); }
+#app .wp-add-lt .bad, #app .wp-add-lt b.bad { color: var(--bad); }
+#app .wp-add-why { margin: 2px 0 6px; font-size: 12px; color: var(--muted); }
+#app .wp-add.is-spend .wp-add-k { color: var(--go); font-weight: 600; }
+#app .wp-add.is-hold .wp-add-k { color: var(--muted); }
+#app .wp-add.is-hold .wp-add-n, #app .wp-add.is-hold .wp-add-f, #app .wp-add.is-hold .wp-add-d { opacity: 0.75; }
