@@ -2,6 +2,18 @@
 
 A local week planner for an ESPN fantasy basketball points league. It replicates League Winner's Weekly Slate from ESPN data: games edge against your opponent, a night-by-night view with open lineup slots and the best add, a roster grid with real and projected points, and a streaming board. It runs on your own computer and reads your league through a small local server.
 
+## Views
+
+| View | What it shows |
+|---|---|
+| This week | Score, projected finish and your win chance; games edge; night cards with the best add and how much it moves your win chance; roster grid; streaming board. |
+| Playoffs | Games per playoff round for your players, every NBA team and the best free agents, with expected points. |
+| Trends | Last 7 and 15 games against the season and ESPN's projection, minutes and starts, then buy-low and sell-high lists from the whole league. |
+| Trades | Analyzer for any trade with any team (both sides, next 4 weeks and rest of season, forced drops), and trade ideas that help both teams. |
+| League | Power rankings: record, points for, projected strength a week and remaining schedule. |
+
+Win chance comes from simulating the rest of the week 5,000 times with per-game spread, rest days and day-to-day players.
+
 ## Requirements
 
 - Python 3.8 or newer. Nothing else to install: the server uses only the standard library and the front end has no build step.
@@ -96,6 +108,7 @@ node --test
 | `web/model.js` | Pure logic: weeks, projections, lineup matching, recommendations. |
 | `web/espn.js` | Data layer: fetches and normalises ESPN responses. |
 | `web/demo-data.js` | Fake ESPN responses for `?demo`. |
+| `web/insights.js` | Pure logic for win chance, playoffs, trends, trades, power rankings and the digest. |
 | `web/factors.js` | Per-game factors (venue, opponent, back-to-back), generated. |
 | `tools/build_factors.py` | Rebuilds `web/factors.js` from public ESPN game logs. |
 | `tools/digest.js` | Daily digest for the command line or a scheduled task (`node tools/digest.js`). |
