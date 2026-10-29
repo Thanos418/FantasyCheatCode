@@ -5,7 +5,7 @@ A local week planner for an ESPN fantasy basketball points league. It replicates
 ## Requirements
 
 - Python 3.8 or newer. Nothing else to install: the server uses only the standard library and the front end has no build step.
-- Node is only needed to run the tests.
+- Node is only needed to run the tests and the daily digest.
 
 ## Setup
 
@@ -43,6 +43,17 @@ python server.py             # start the server and open http://127.0.0.1:8765
 ### Demo mode
 
 Open `http://127.0.0.1:8765/?demo` to see the app on fake data. No cookies and no ESPN access needed.
+
+## Daily digest
+
+`tools/digest.js` prints the morning facts as plain text, one per line: the week score, your win chance, how many of your players play today, injuries, role changes and the best add. It needs Node 18 or newer (nothing to install) and reads `config.json` for the league and your ESPN cookies. It asks ESPN directly, so the local server does not have to be running.
+
+```
+node tools/digest.js          # your league
+node tools/digest.js --demo   # fake league, no cookies needed
+```
+
+If the cookies are missing or ESPN rejects them, it says so and exits with code 1. The cookies are never printed. To get the digest every morning, run it from a scheduled task (Task Scheduler on Windows, cron on macOS/Linux). It keeps a small cache in `.cache/`, so repeat runs make few requests.
 
 ## Projections
 
@@ -87,5 +98,6 @@ node --test
 | `web/demo-data.js` | Fake ESPN responses for `?demo`. |
 | `web/factors.js` | Per-game factors (venue, opponent, back-to-back), generated. |
 | `tools/build_factors.py` | Rebuilds `web/factors.js` from public ESPN game logs. |
+| `tools/digest.js` | Daily digest for the command line or a scheduled task (`node tools/digest.js`). |
 | `tests/` | Tests for the model (`node --test`). |
 | `SPEC.md` | Build spec and ESPN API notes. |

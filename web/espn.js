@@ -7,6 +7,7 @@
   const PROBE_TTL_MS = 7 * 24 * 3600 * 1000;
   const MAX_INFLIGHT = 6;
   const FA_STATS = ['002027', '102027', '012027', '022027', '002026'];
+  const COOKIE_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36';
 
   function buildQuery(views, params) {
     const parts = [];
@@ -30,6 +31,7 @@
     const mode = opts.mode || 'local';
     const L = 'seasons/' + opts.season + '/segments/0/leagues/' + opts.leagueId;
     const M = () => root.WPModel;
+    const doFetch = opts.fetch || ((u, i) => root.fetch(u, i));
 
     async function get(rel, o) {
       o = o || {};
@@ -44,15 +46,22 @@
       let init;
       if (mode === 'direct') {
         url = DIRECT_BASE + rel + (qs ? '?' + qs : '');
-        init = { credentials: 'include', headers };
+        if (opts.cookie) { // Node digest: no browser cookie jar, send the cookies ourselves
+          headers.Cookie = opts.cookie;
+          headers.Accept = 'application/json';
+          headers['User-Agent'] = COOKIE_UA;
+          init = { headers };
+        } else {
+          init = { credentials: 'include', headers };
+        }
       } else {
         headers['x-cache-ttl'] = String(ttl);
         url = '/espn/' + rel + (qs ? '?' + qs : '');
         init = { headers };
       }
       let res;
-      try { res = await fetch(url, init); } catch (e) {
-        const err = new Error('Could not reach ' + (mode === 'direct' ? 'ESPN' : 'the local server') + ': ' + e.message);
+      try { res = await doFetch(url, init); } catch (e) {
+        const err = new Error('Could not reach ' + (mode === 'direct' ? 'ESPN' : 'the local server') + ': ' + ((e.cause && e.cause.message) || e.message));
         err.status = 0;
         throw err;
       }
@@ -116,6 +125,20 @@
       return { league, sched, weeks, myTeamId };
     }
 
+    // Top free agents as of day `cur`. loadWeek and loadLeague both use this, so they share one cache key.
+    const freeAgentsRaw = (cur) => get(L, {
+      views: ['kona_player_info'], params: { scoringPeriodId: cur }, ttl: 300,
+      filter: {
+        players: {
+          filterStatus: { value: ['FREEAGENT', 'WAIVERS'] },
+          filterSlotIds: { value: [0, 1, 2, 3, 4, 5, 6, 11] },
+          sortPercOwned: { sortPriority: 1, sortAsc: false },
+          limit: 250,
+          filterStatsForTopScoringPeriodIds: { value: 5, additionalValue: FA_STATS },
+        },
+      },
+    });
+
     async function loadWeek(base, week) {
       const m = M();
       const { league, myTeamId } = base;
@@ -132,18 +155,7 @@
 
       const [rawBySp, faRaw, txRaw] = await Promise.all([
         Promise.all(spsToLoad.map(rosterAt)),
-        wantFa ? get(L, {
-          views: ['kona_player_info'], params: { scoringPeriodId: cur }, ttl: 300,
-          filter: {
-            players: {
-              filterStatus: { value: ['FREEAGENT', 'WAIVERS'] },
-              filterSlotIds: { value: [0, 1, 2, 3, 4, 5, 6, 11] },
-              sortPercOwned: { sortPriority: 1, sortAsc: false },
-              limit: 250,
-              filterStatsForTopScoringPeriodIds: { value: 5, additionalValue: FA_STATS },
-            },
-          },
-        }) : null,
+        wantFa ? freeAgentsRaw(cur) : null,
         wantFa ? get(L, { views: ['mTransactions2'], params: { scoringPeriodId: cur }, ttl: 60 }) : null,
       ]);
 
@@ -170,9 +182,30 @@
       };
     }
 
+    // League-wide data for the Phase 2 views: every team's current roster, every matchup of the season, free agents.
+    async function loadLeague(base) {
+      const m = M();
+      const cur = base.league.currentSp;
+      const [rosterRaw, schedRaw, faRaw] = await Promise.all([
+        get(L, { views: ['mRoster'], params: { scoringPeriodId: cur }, ttl: 300 }),
+        get(L, { views: ['mMatchup'], ttl: 300 }),
+        freeAgentsRaw(cur),
+      ]);
+      const rosters = {};
+      (rosterRaw.teams || []).forEach((t) => {
+        if (!t.roster) return;
+        rosters[t.id] = (t.roster.entries || []).map((e) => { const p = m.normPlayer(e); p.onTeamId = t.id; return p; });
+      });
+      return {
+        rosters,
+        matchups: m.normLeague({}, schedRaw).matchups, // same normalisation as league.matchups
+        freeAgents: (faRaw.players || []).map((e) => m.normPlayer(e)),
+      };
+    }
+
     function clearCache() { try { root.localStorage.removeItem(probeKey); } catch (e) { /* ignore */ } }
 
-    return { mode, get, loadBase, loadWeek, clearCache };
+    return { mode, get, loadBase, loadWeek, loadLeague, clearCache };
   }
 
   root.WPData = { create };

@@ -89,6 +89,16 @@
     gridLeft: 0,
     setup: { message: '', values: {} },
     fatal: null,
+    // Phase 2 views
+    view: ['week', 'playoffs', 'trends', 'trades', 'league'].indexOf(store.get('wp:view')) >= 0 ? store.get('wp:view') : 'week',
+    wp: null, // win probability for the loaded week (WPInsights.winProbability)
+    lg: null, // client.loadLeague result, cached until Refresh
+    lgLoading: false,
+    lgError: null,
+    lgToken: 0,
+    lgVer: 0,
+    memo: {}, // derived league-wide results, cleared whenever lg changes
+    trade: { team: null, give: new Set(), get: new Set() },
   };
 
   const proTeam = (id) => (S.base && S.base.sched && S.base.sched.teams && S.base.sched.teams[id]) || null;
@@ -129,11 +139,33 @@
     return '<span class="wp-face" aria-hidden="true"><span class="wp-ini">' + esc(initials(p && p.name)) + '</span>' + img + '</span>';
   }
 
-  function loadingHTML(msg) {
+  function loadingHTML(msg, small) {
     const n = (S.base && S.base.league && S.base.league.starters) || 10;
     let p = '';
     for (let i = 0; i < n; i++) p += '<i class="wp-pip p-load" style="--i:' + i + '"></i>';
-    return '<div class="wp-loading" role="status"><span class="wp-pips wp-pips--you wp-pips--lg">' + p + '</span><p>' + esc(msg) + '</p></div>';
+    return '<div class="wp-loading' + (small ? ' wp-loading--sm' : '') + '" role="status"><span class="wp-pips wp-pips--you wp-pips--lg">' + p + '</span><p>' + esc(msg) + '</p></div>';
+  }
+
+  // Win chance (WPInsights). Fractions in, whole percents out; the change hides below half a point.
+  function winTag(gain) {
+    if (!S.wp || !isNum(gain)) return '';
+    let d;
+    try { d = window.WPInsights.winDelta(S.wp, gain); } catch (e) { return ''; }
+    if (!isNum(d)) return '';
+    const pct = d * 100;
+    if (Math.abs(pct) < 0.5) return '';
+    const r = (pct < 0 ? -1 : 1) * Math.round(Math.abs(pct));
+    return ' <span class="wp-wd ' + (r > 0 ? 'good' : 'bad') + '" title="Change in your chance to win the week if you make this move">' + sgnN(r) + '% win chance</span>';
+  }
+
+  function winHTML() {
+    const w = S.wp;
+    if (!w || !w.opp || !isNum(w.pWin)) return '';
+    const pct = clamp(Math.round(w.pWin * 100), 1, 99);
+    return '<div class="wp-win" title="Your chance to finish ahead, from simulating the rest of the week. A tie counts as half.">' +
+      '<p class="wp-win-t">You win <b>' + pct + '%</b></p>' +
+      '<div class="wp-meter" role="img" aria-label="' + esc('You win ' + pct + '% of simulated finishes') + '"><i style="width:' + pct + '%"></i></div>' +
+      '</div>';
   }
 
   /* ------------------------------------------------------------- setup screen */
@@ -184,25 +216,33 @@
     const weeks = b.weeks;
     const i = S.weekIdx;
     const w = weeks[i];
-    if (!w) return '';
-    const opts = weeks.map((x, k) => '<option value="' + k + '"' + (k === i ? ' selected' : '') + '>' + esc(x.label) + ' · ' + esc(x.range) + '</option>').join('');
-    const note = weekNote(w);
+    const onWeek = S.view === 'week';
+    if (onWeek && !w) return '';
+    const busy = S.loading || (!onWeek && S.lgLoading);
     const synced = S.syncedAt ? 'Synced ' + esc(clock(S.syncedAt)) : '';
+    let left, note = '';
+    if (onWeek) {
+      const opts = weeks.map((x, k) => '<option value="' + k + '"' + (k === i ? ' selected' : '') + '>' + esc(x.label) + ' · ' + esc(x.range) + '</option>').join('');
+      note = weekNote(w);
+      left = '<div class="wp-pager" role="group" aria-label="Week">' +
+        '<button type="button" class="wp-iconbtn" data-act="prev" data-focus="prev" aria-label="Previous week"' + (i <= 0 ? ' disabled' : '') + '>' + ICON.prev + '</button>' +
+        '<label class="wp-weekpick">' +
+        '<span class="wp-weektitle">' + esc(w.label) + ' · ' + esc(w.range) + '</span>' + ICON.caret +
+        '<select data-act="week" data-focus="week" aria-label="Choose week">' + opts + '</select>' +
+        '</label>' +
+        '<button type="button" class="wp-iconbtn" data-act="next" data-focus="next" aria-label="Next week"' + (i >= weeks.length - 1 ? ' disabled' : '') + '>' + ICON.next + '</button>' +
+        '</div>';
+    } else {
+      left = '<p class="wp-viewhead">' + esc((b.league && b.league.name) || 'Your league') + '</p>';
+    }
     return '' +
       '<div class="wp-top">' +
-      '<div class="wp-pager" role="group" aria-label="Week">' +
-      '<button type="button" class="wp-iconbtn" data-act="prev" data-focus="prev" aria-label="Previous week"' + (i <= 0 ? ' disabled' : '') + '>' + ICON.prev + '</button>' +
-      '<label class="wp-weekpick">' +
-      '<span class="wp-weektitle">' + esc(w.label) + ' · ' + esc(w.range) + '</span>' + ICON.caret +
-      '<select data-act="week" data-focus="week" aria-label="Choose week">' + opts + '</select>' +
-      '</label>' +
-      '<button type="button" class="wp-iconbtn" data-act="next" data-focus="next" aria-label="Next week"' + (i >= weeks.length - 1 ? ' disabled' : '') + '>' + ICON.next + '</button>' +
-      '</div>' +
+      left +
       '<div class="wp-sync">' +
       (S.mode === 'demo' ? '<span class="wp-tag wp-tag--demo" title="Fake ESPN data, nothing is read from your league">Demo data</span>' : '') +
-      (b.league && b.league.name ? '<span class="wp-league">' + esc(b.league.name) + '</span>' : '') +
+      (onWeek && b.league && b.league.name ? '<span class="wp-league">' + esc(b.league.name) + '</span>' : '') +
       (synced ? '<span class="wp-synced">' + synced + '</span>' : '') +
-      '<button type="button" class="wp-btn wp-btn--quiet' + (S.loading ? ' is-loading' : '') + '" data-act="refresh" data-focus="refresh"' + (S.loading ? ' aria-busy="true"' : '') + '>' + ICON.refresh + '<span>Refresh</span></button>' +
+      '<button type="button" class="wp-btn wp-btn--quiet' + (busy ? ' is-loading' : '') + '" data-act="refresh" data-focus="refresh"' + (busy ? ' aria-busy="true"' : '') + '>' + ICON.refresh + '<span>Refresh</span></button>' +
       '</div>' +
       (note ? '<p class="wp-weeknote">' + esc(note) + '</p>' : '') +
       '</div>';
@@ -261,6 +301,7 @@
       '</div>' +
       (opp ? heroBar(me, opp) : '') +
       (v.text ? '<p class="wp-verdict ' + v.cls + '">' + esc(v.text) + '</p>' : '') +
+      winHTML() +
       '</section>';
   }
 
@@ -328,7 +369,7 @@
       const chips = g.teams.map((t) => {
         const m = mine.get(t.id) || 0, o = theirs.get(t.id) || 0;
         const cls = m && o ? ' is-both' : m ? ' is-you' : o ? ' is-opp' : '';
-        const tip = [m ? plural(m, 'of your players') : '', o ? plural(o, 'of their players') : ''].filter(Boolean).join(', ');
+        const tip = [m ? m + ' of your players' : '', o ? o + ' of their players' : ''].filter(Boolean).join(', ');
         return '<li class="wp-chip' + cls + '"' + (tip ? ' title="' + esc(tip) + '"' : '') + '>' + esc(t.abbrev) + (tip ? '<span class="wp-sr"> (' + esc(tip) + ')</span>' : '') + '</li>';
       }).join('');
       return '<div class="wp-tgroup"><p class="wp-tcount"><b>' + g.count + '</b><span>' + (g.count === 1 ? 'game' : 'games') + '</span></p><ul class="wp-chips">' + chips + '</ul></div>';
@@ -390,6 +431,7 @@
       '<p class="wp-add-f">' + esc(facts) + '</p>' +
       '<p class="wp-add-d">' + drop + ' <span class="wp-gain ' + (rec.gain > 0 ? 'good' : '') + '">' + sgn1(rec.gain) + ' FP</span>' +
       (rec.upgrade ? '' : ' <span class="wp-dim" title="Per game he is projected below the player he replaces. The gain comes from extra games in your lineup.">not an upgrade</span>') +
+      winTag(rec.gain) +
       '</p>';
   }
 
@@ -691,7 +733,7 @@
         '<div class="bc-f">' + f1(r.faProj && r.faProj.fp) + '</div>' +
         '<div class="bc-d" role="img" aria-label="' + esc(plural(r.gamesLeft || 0, 'game') + ' left') + '"><span class="wp-kps">' + pips + '</span><span class="bc-dn">' + (r.gamesLeft || 0) + ' left</span></div>' +
         '<div class="bc-x">' + (r.drop ? 'Drop <b>' + esc(r.drop.last || r.drop.name) + '</b>' : '<span class="wp-dim">Open spot</span>') + '</div>' +
-        '<div class="bc-g"><b class="' + (r.gain > 0 ? 'good' : '') + '">' + sgn1(r.gain) + '</b><small>' + (best ? 'from ' + esc(best) : '') + (r.upgrade ? '' : (best ? ' · ' : '') + 'not an upgrade') + '</small></div>' +
+        '<div class="bc-g"><b class="' + (r.gain > 0 ? 'good' : '') + '">' + sgn1(r.gain) + '</b><small>' + (best ? 'from ' + esc(best) : '') + (r.upgrade ? '' : (best ? ' · ' : '') + 'not an upgrade') + '</small>' + winTag(r.gain) + '</div>' +
         '</li>';
     }).join('');
 
@@ -714,6 +756,420 @@
   function footHTML() {
     return '<footer class="wp-colophon"><p>Projected points blend ESPN’s season projection with this season’s average, weighted by games played. ' +
       'Lineups are optimised against real position eligibility. Data comes from ESPN and refreshes every few minutes.</p></footer>';
+  }
+
+  /* ---------------------------------------------------------- league-wide views
+     Playoffs, Trends, Trades and League read client.loadLeague() and WPInsights. Every WPInsights
+     call goes through needInsights() so a missing module shows a message instead of a broken page. */
+
+  const VIEWS = [['week', 'This week'], ['playoffs', 'Playoffs'], ['trends', 'Trends'], ['trades', 'Trades'], ['league', 'League']];
+
+  function viewsHTML() {
+    return '<nav class="wp-views" aria-label="View">' + VIEWS.map((v) => {
+      const on = S.view === v[0];
+      return '<button type="button" class="wp-vbtn' + (on ? ' is-on' : '') + '" data-act="view" data-view="' + v[0] + '" data-focus="view-' + v[0] + '" aria-pressed="' + (on ? 'true' : 'false') + '">' + esc(v[1]) + '</button>';
+    }).join('') + '</nav>';
+  }
+
+  const factorsFor = (isPoints) => (isPoints && window.WPFactors) || null;
+
+  function needInsights(fn) {
+    const I = window.WPInsights;
+    if (!I) throw new Error('insights.js did not load. Make sure it sits next to index.html, then reload.');
+    if (typeof I[fn] !== 'function') throw new Error('insights.js has no ' + fn + ' yet. Update it and reload.');
+    return I;
+  }
+
+  function memo(key, build) {
+    if (!(key in S.memo)) S.memo[key] = build();
+    return S.memo[key];
+  }
+  function resetDerived() { S.memo = {}; S.lgVer++; }
+
+  const fromSp = () => { const L = S.base.league; return Math.min(L.currentSp, L.finalSp || L.currentSp); };
+  const recText = (r) => (r ? r.wins + '–' + r.losses + (r.ties ? '–' + r.ties : '') : '');
+  const roundName = (w) => { const s = String((w && w.label) || '').replace(/^Playoffs\s*·\s*/i, ''); return s.charAt(0).toUpperCase() + s.slice(1); };
+  const reduceMotion = () => !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+
+  function teamName(id) {
+    const t = S.base && S.base.league && S.base.league.teams && S.base.league.teams[id];
+    return (t && t.name) || 'Team ' + id;
+  }
+
+  function myRoster() {
+    const r = S.lg && S.lg.rosters && S.lg.rosters[S.base.myTeamId];
+    if (r && r.length) return r;
+    if (S.vm) return S.vm.me.rows.filter((x) => !x.gone && x.player).map((x) => x.player);
+    return [];
+  }
+
+  function projFp(p) {
+    try {
+      const L = S.base.league;
+      const pr = window.WPModel.projectPlayer(p, L.season, L.isPoints);
+      return pr && isNum(pr.fp) ? pr.fp : null;
+    } catch (e) { return null; }
+  }
+
+  function secHead(id, title, text) {
+    return '<div class="wp-sec-h"><h2 id="' + id + '">' + esc(title) + '</h2>' + (text ? '<p>' + esc(text) + '</p>' : '') + '</div>';
+  }
+
+  function playerCellHTML(p, extra) {
+    const inj = injuryTag(p.injury);
+    const meta = [proAbbrev(p.proTeamId), p.pos, extra].filter(Boolean).join(' · ');
+    return '<span class="wp-pc">' + faceHTML(p) + '<span class="wp-pname"><span class="wp-pn">' + esc(p.name) +
+      (inj ? ' <span class="wp-inj is-' + inj.cls + '" title="' + esc(inj.tip) + '">' + inj.t + '</span>' : '') + '</span>' +
+      '<span class="wp-pm">' + esc(meta) + '</span></span></span>';
+  }
+
+  function softErrorHTML(title, err) {
+    const msg = (err && err.message) || String(err || 'Unknown error');
+    return '<div class="wp-panel wp-errorpanel" role="alert"><h2>' + esc(title) + '</h2><p>' + esc(msg) + '</p>' +
+      '<p class="wp-dim">Reload the page to try again. If it keeps failing, check that insights.js sits next to index.html.</p>' +
+      '<div class="wp-form-actions"><button type="button" class="wp-btn wp-btn--primary" data-act="retry-view">Try again</button></div></div>';
+  }
+  const inlineErrorHTML = (msg) => '<p class="wp-alert" role="alert">' + esc(msg) + '</p>';
+
+  /* ---- Playoffs */
+
+  function gamesCell(n, max) {
+    n = n || 0;
+    return '<td class="wp-g"><span class="wp-gn' + (!n ? ' is-zero' : max && n >= max ? ' is-max' : '') + '"' + (!n ? ' title="No games"' : '') + '>' + (n || '–') + '</span></td>';
+  }
+
+  function playoffTableHTML(list, res, label, withOwn) {
+    const weeks = res.weeks || [];
+    const max = {};
+    weeks.forEach((w) => { max[w.id] = (res.teams || []).reduce((m, t) => Math.max(m, (t.games && t.games[w.id]) || 0), 0); });
+    const head = weeks.map((w) => '<th scope="col" class="wp-g">' + esc(roundName(w)) + '<small>' + esc(w.range) + '</small></th>').join('');
+    const body = list.map((r) => {
+      const p = r.player || {};
+      const own = p.own && isNum(p.own.pct) ? Math.round(p.own.pct) + '%' : '–';
+      return '<tr><th scope="row" class="wp-stick">' + playerCellHTML(p) + '</th>' +
+        weeks.map((w) => gamesCell(r.games && r.games[w.id], max[w.id])).join('') +
+        '<td class="wp-g"><b>' + (r.total || 0) + '</b></td><td><b>' + f1(r.expFp) + '</b></td>' + (withOwn ? '<td>' + own + '</td>' : '') + '</tr>';
+    }).join('');
+    return '<div class="wp-tscroll" tabindex="0" role="region" aria-label="' + esc(label) + '"><table class="wp-dt"><caption class="wp-sr">' + esc(label) + '</caption>' +
+      '<thead><tr><th scope="col" class="wp-stick">Player</th>' + head + '<th scope="col" class="wp-g">Games</th><th scope="col">Expected FP</th>' + (withOwn ? '<th scope="col">Rostered</th>' : '') + '</tr></thead>' +
+      '<tbody>' + body + '</tbody></table></div>';
+  }
+
+  function playoffsHTML() {
+    const L = S.base.league;
+    const res = memo('playoffs', () => needInsights('playoffPlanner').playoffPlanner({
+      league: L, sched: S.base.sched, weeks: S.base.weeks, factors: factorsFor(L.isPoints), roster: myRoster(), freeAgents: (S.lg && S.lg.freeAgents) || [],
+    }));
+    const weeks = (res && res.weeks) || [];
+    if (!weeks.length) {
+      return '<div class="wp-view"><div class="wp-empty"><p>The fantasy playoffs are not on the schedule yet, so there is nothing to plan.</p>' +
+        '<button type="button" class="wp-btn" data-act="view" data-view="week">Back to this week</button></div></div>';
+    }
+    const mine = res.mine || [];
+    const mineTeams = new Set(mine.filter((r) => r.player && r.player.slot !== 13).map((r) => r.player.proTeamId));
+    const groups = new Map();
+    (res.teams || []).forEach((t) => { if (!groups.has(t.total)) groups.set(t.total, []); groups.get(t.total).push(t); });
+    const groupHTML = Array.from(groups.keys()).sort((a, b) => b - a).map((total) => {
+      const chips = groups.get(total).map((t) => {
+        const detail = weeks.map((w) => roundName(w) + ' ' + ((t.games && t.games[w.id]) || 0)).join(', ') + (t.b2b ? ', ' + plural(t.b2b, 'back-to-back') : '');
+        return '<li class="wp-chip' + (mineTeams.has(t.proId) ? ' is-you' : '') + '" title="' + esc(detail) + '">' + esc(t.abbrev) +
+          (t.b2b ? '<small>' + t.b2b + ' B2B</small>' : '') + '<span class="wp-sr"> (' + esc(detail) + ')</span></li>';
+      }).join('');
+      return '<div class="wp-tgroup"><p class="wp-tcount"><b>' + total + '</b><span>' + (total === 1 ? 'game' : 'games') + '</span></p><ul class="wp-chips">' + chips + '</ul></div>';
+    }).join('');
+    const fas = res.fas || [];
+    return '<div class="wp-view">' +
+      '<div class="wp-pair">' +
+      '<section class="wp-sec" aria-labelledby="h-pmine">' +
+      secHead('h-pmine', 'Your players', 'Games in each playoff round and expected points after schedule, rest days and back-to-backs. Orange marks the most games any NBA team plays that round.') +
+      (mine.length ? playoffTableHTML(mine, res, 'Your players, games by playoff round', false) : '<div class="wp-empty"><p>No roster to plan with yet. Refresh to load it.</p></div>') +
+      '</section>' +
+      '<section class="wp-sec" aria-labelledby="h-pteams">' +
+      secHead('h-pteams', 'NBA teams by games', 'Total games across the playoff rounds. Teams with one of your players are shaded blue. B2B counts second nights of back-to-backs.') +
+      '<div class="wp-tgroups">' + (groupHTML || '<p class="wp-empty">No NBA games are scheduled in these rounds.</p>') + '</div>' +
+      '</section></div>' +
+      '<section class="wp-sec" aria-labelledby="h-pfa">' +
+      secHead('h-pfa', 'Free agents to hold for the playoffs', 'Top available players by expected points over all the playoff rounds, ruled-out players skipped.') +
+      (fas.length ? playoffTableHTML(fas, res, 'Free agents, games by playoff round', true) : '<div class="wp-empty"><p>No free agents to show. Refresh to load the pool.</p></div>') +
+      '</section></div>';
+  }
+
+  /* ---- Trends */
+
+  const TREND_TAGS = { rising: ['Rising', 'up'], falling: ['Falling', 'down'] };
+  const TREND_ROLES = { 'new starter': ['New starter', 'up'], 'lost start': ['Lost start', 'down'], 'more minutes': ['More minutes', 'up'], 'fewer minutes': ['Fewer minutes', 'down'] };
+
+  function trendChips(r) {
+    const out = [];
+    const tg = TREND_TAGS[r.tag];
+    const ro = TREND_ROLES[r.role];
+    if (tg) out.push('<span class="wp-tag wp-tag--' + tg[1] + '" title="' + (r.tag === 'rising' ? 'Last 15 games are well above the usual level' : 'Last 15 games are well below the usual level') + '">' + tg[0] + '</span>');
+    if (ro) out.push('<span class="wp-tag wp-tag--' + ro[1] + '" title="' + esc(isNum(r.startRateL15) ? 'Starts ' + Math.round(r.startRateL15 * 100) + '% of games over the last 15' : 'Minutes changed over the last 15') + '">' + ro[0] + '</span>');
+    return out.join('');
+  }
+
+  const trendBase = (r) => (isNum(r.proj) ? r.proj : r.avg);
+  const deltaHTML = (v) => (isNum(v) ? '<span class="' + (v >= 0.05 ? 'good' : v <= -0.05 ? 'bad' : '') + '">' + sgn1(v) + '</span>' : '–');
+
+  function trendTableHTML(rows, label) {
+    const body = rows.map((r) => {
+      const p = r.player || {};
+      const mins = isNum(r.mpgL15) ? r.mpgL15 : r.mpg;
+      return '<tr><th scope="row" class="wp-stick">' + playerCellHTML(p) + '</th>' +
+        '<td>' + f1(r.avg) + (r.n ? '<small>' + r.n + ' GP</small>' : '') + '</td>' +
+        '<td>' + f1(r.l7) + '</td>' +
+        '<td>' + f1(r.l15) + (r.n15 ? '<small>' + r.n15 + ' GP</small>' : '') + '</td>' +
+        '<td>' + f1(r.proj) + '</td>' +
+        '<td class="wp-dl">' + deltaHTML(r.delta) + '</td>' +
+        '<td>' + (isNum(mins) ? f1(mins) : '–') + (isNum(r.mpg) && isNum(r.mpgL15) ? '<small>season ' + f1(r.mpg) + '</small>' : '') + '</td>' +
+        '<td class="wp-l"><span class="wp-notes">' + trendChips(r) + '</span></td></tr>';
+    }).join('');
+    return '<div class="wp-tscroll" tabindex="0" role="region" aria-label="' + esc(label) + '"><table class="wp-dt"><caption class="wp-sr">' + esc(label) + '</caption>' +
+      '<thead><tr><th scope="col" class="wp-stick">Player</th><th scope="col">Season</th><th scope="col">Last 7</th><th scope="col">Last 15</th><th scope="col">ESPN proj</th><th scope="col">Change</th><th scope="col">Minutes</th><th scope="col" class="wp-l">Notes</th></tr></thead>' +
+      '<tbody>' + body + '</tbody></table></div>';
+  }
+
+  function trendItemHTML(r, who) {
+    const p = r.player || {};
+    const owner = who === 'buy' ? teamName(p.onTeamId) : '';
+    return '<li class="wp-trow"><div class="wp-trow-p">' + playerCellHTML(p, owner) + '</div>' +
+      '<div class="wp-trow-n"><b>' + f1(r.l15) + '</b><small>last 15 vs ' + f1(trendBase(r)) + '</small></div>' +
+      '<div class="wp-trow-t"><span class="wp-dl">' + deltaHTML(r.delta) + '</span>' + trendChips(r) + '</div></li>';
+  }
+
+  function trendsHTML() {
+    const L = S.base.league, me = S.base.myTeamId;
+    const rosters = (S.lg && S.lg.rosters) || {};
+    const rows = memo('trends', () => {
+      const all = [];
+      Object.keys(rosters).forEach((tid) => (rosters[tid] || []).forEach((p) => all.push(p)));
+      return needInsights('trends').trends(all, L.season) || [];
+    });
+    const bl = memo('buysell', () => needInsights('buyLowSellHigh').buyLowSellHigh(rows, me) || { buyLow: [], sellHigh: [] });
+    const mineIds = new Set((rosters[me] || []).map((p) => String(p.id)));
+    const key = (v) => (isNum(v) ? v : -1);
+    const mine = rows.filter((r) => r.player && mineIds.has(String(r.player.id))).sort((a, b) => key(b.avg) - key(a.avg));
+    const buy = bl.buyLow || [], sell = bl.sellHigh || [];
+    return '<div class="wp-view">' +
+      '<section class="wp-sec" aria-labelledby="h-tmine">' +
+      secHead('h-tmine', 'Your roster', 'Points per game this season, over the last 7 and 15 games, and against ESPN’s projection. Change is the last 15 minus the projection (the season average when there is none).') +
+      (mine.length ? trendTableHTML(mine, 'Your roster, recent form') : '<div class="wp-empty"><p>No roster to show yet. Refresh to load it.</p></div>') +
+      '</section>' +
+      '<div class="wp-pair">' +
+      '<section class="wp-sec" aria-labelledby="h-buy">' +
+      secHead('h-buy', 'Buy low', 'Players on other teams who usually score 25 or more a game but have slumped over the last 15. Worth a trade offer.') +
+      (buy.length ? '<ul class="wp-tlist">' + buy.map((r) => trendItemHTML(r, 'buy')).join('') + '</ul>' : '<div class="wp-empty"><p>Nobody on another team is in a deep enough slump right now. Check again after more games.</p></div>') +
+      '</section>' +
+      '<section class="wp-sec" aria-labelledby="h-sell">' +
+      secHead('h-sell', 'Sell high', 'Your players running well above their usual level over the last 15. Their price may not hold.') +
+      (sell.length ? '<ul class="wp-tlist">' + sell.map((r) => trendItemHTML(r, 'sell')).join('') + '</ul>' : '<div class="wp-empty"><p>None of your players is running unusually hot. Nothing to sell yet.</p></div>') +
+      '</section></div></div>';
+  }
+
+  /* ---- Trades */
+
+  const countText = (n) => (n ? '· ' + n + ' picked' : '');
+
+  function pickItemHTML(p, side, checked) {
+    const inj = injuryTag(p.injury);
+    const meta = [proAbbrev(p.proTeamId), p.pos].filter(Boolean).join(' · ');
+    const id = esc(p.id);
+    return '<li><label class="wp-pick"><input type="checkbox" data-act="trade-pick" data-side="' + side + '" data-id="' + id + '" data-focus="pick-' + side + '-' + id + '"' + (checked ? ' checked' : '') + '>' +
+      faceHTML(p) + '<span class="wp-pname"><span class="wp-pn">' + esc(p.name) + (inj ? ' <span class="wp-inj is-' + inj.cls + '" title="' + esc(inj.tip) + '">' + inj.t + '</span>' : '') + '</span>' +
+      '<span class="wp-pm">' + esc(meta) + '</span></span>' +
+      '<span class="wp-pickfp">' + f1(projFp(p)) + '<small>FP a game</small></span></label></li>';
+  }
+
+  function pickColHTML(side, title, roster, set) {
+    const list = roster.map((p) => ({ p, fp: projFp(p) })).sort((a, b) => (b.fp == null ? -1 : b.fp) - (a.fp == null ? -1 : a.fp));
+    return '<section class="wp-pickcol" aria-label="' + esc(title) + '"><h3>' + esc(title) + ' <span class="wp-dim" data-count="' + side + '">' + countText(set.size) + '</span></h3>' +
+      '<ul class="wp-picklist">' + list.map((x) => pickItemHTML(x.p, side, set.has(String(x.p.id)))).join('') + '</ul></section>';
+  }
+
+  function tradeState() {
+    const t = S.trade;
+    const rosters = (S.lg && S.lg.rosters) || {};
+    if (t.team && !rosters[t.team]) { t.team = null; t.give.clear(); t.get.clear(); }
+    return t;
+  }
+
+  function tradeResultHTML() {
+    const t = tradeState();
+    if (!t.team) return '';
+    const L = S.base.league, me = S.base.myTeamId, rosters = S.lg.rosters || {};
+    const lookup = (list, ids) => list.filter((p) => ids.has(String(p.id))).map((p) => p.id);
+    const give = lookup(rosters[me] || [], t.give);
+    const get = lookup(rosters[t.team] || [], t.get);
+    if (!give.length && !get.length) return '<p class="wp-hint">Tick the players you would give and get to see what the trade does to both lineups.</p>';
+    const other = L.teams && L.teams[t.team] ? L.teams[t.team].id : Number(t.team);
+    // Main numbers use the next 4 weeks, the same window as the trade ideas; rest of season is a second line.
+    let res, ros;
+    try {
+      const args = {
+        league: L, sched: S.base.sched, factors: factorsFor(L.isPoints), rosters, myTeamId: me, otherTeamId: other,
+        give, get, fromSp: fromSp(),
+      };
+      const an = needInsights('analyzeTrade');
+      res = an.analyzeTrade(Object.assign({ toSp: fromSp() + 27 }, args));
+      ros = an.analyzeTrade(Object.assign({ toSp: L.finalSp }, args));
+    } catch (err) {
+      if (window.console) console.error(err);
+      return inlineErrorHTML('Could not price this trade. ' + ((err && err.message) || ''));
+    }
+    const card = (name, side, you) => {
+      const x = side || {};
+      return '<div class="wp-ba' + (you ? ' is-you' : '') + '"><p class="wp-ba-t">' + esc(name) + '</p>' +
+        '<p class="wp-ba-n"><span class="from">' + f1(x.before) + '</span><span class="mid">to</span><b>' + f1(x.after) + '</b></p>' +
+        '<p class="wp-ba-d ' + (x.delta > 0.049 ? 'good' : x.delta < -0.049 ? 'bad' : '') + '">' + sgn1(x.delta) + ' FP a week</p>' +
+        '<p class="wp-dim">Rest of season ' + sgn1((you ? ros.me : ros.them).delta) + ' a week</p></div>';
+    };
+    const d = res.drops || {};
+    const notes = [];
+    if (d.me) notes.push('<p>You would be over the roster limit, so <b>' + esc(d.me.name) + '</b> (your lowest projection) gets dropped.</p>');
+    if (d.them) notes.push('<p>' + esc(teamName(t.team)) + ' would be over the limit and drop <b>' + esc(d.them.name) + '</b>.</p>');
+    return '<div class="wp-ba-grid">' + card(teamName(me), res.me, true) + card(teamName(t.team), res.them, false) + '</div>' +
+      '<div class="wp-drops">' + (notes.join('') || '<p class="wp-dim">Nobody has to be dropped.</p>') + '</div>';
+  }
+
+  function analyzerHTML() {
+    const L = S.base.league, me = String(S.base.myTeamId), rosters = S.lg.rosters || {};
+    const t = tradeState();
+    const teams = Object.keys(rosters).filter((id) => id !== me).map((id) => ({ id, name: teamName(id), rec: L.teams && L.teams[id] && L.teams[id].record }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+    const opts = '<option value="">Choose a team</option>' + teams.map((x) =>
+      '<option value="' + esc(x.id) + '"' + (x.id === t.team ? ' selected' : '') + '>' + esc(x.name) + (x.rec ? ' (' + esc(recText(x.rec)) + ')' : '') + '</option>').join('');
+    const picks = t.team
+      ? '<div class="wp-picks">' + pickColHTML('give', 'You give', rosters[me] || [], t.give) + pickColHTML('get', 'You get', rosters[t.team] || [], t.get) + '</div>'
+      : '<div class="wp-empty"><p>Choose a team to start, or load one of the trade ideas.</p></div>';
+    return secHead('h-an', 'Trade analyzer', 'Points a week from each team’s best lineup over the next 4 weeks, with schedule and rest days included. The rest of the season, playoffs included, is shown underneath.') +
+      '<div class="wp-tradebar"><label class="wp-field"><span>Trade with</span><select class="wp-select" data-act="trade-team" data-focus="trade-team">' + opts + '</select></label>' +
+      (t.team ? '<button type="button" class="wp-btn wp-btn--quiet" data-act="trade-clear" data-focus="trade-clear">Clear picks</button>' : '') + '</div>' +
+      picks +
+      (t.team ? '<div class="wp-trade-result" id="wp-trade-result" tabindex="-1" aria-live="polite">' + tradeResultHTML() + '</div>' : '');
+  }
+
+  function ideasHTML() {
+    const head = secHead('h-ideas', 'Trade ideas', 'One-for-one, two-for-one and one-for-two swaps that raise the weekly points of both teams over the next 4 weeks. Pick one to load it into the analyzer.');
+    const m = S.memo.ideas;
+    if (!m) { scheduleIdeas(); return head + loadingHTML('Looking for trades that help both teams…', true); }
+    if (m.error) return head + inlineErrorHTML('Could not search for trades. ' + (m.error.message || ''));
+    if (!m.list.length) return head + '<div class="wp-empty"><p>No swap makes both teams better right now. Check again after more games.</p></div>';
+    const names = (a) => a.map((p) => esc(p.name)).join(', ');
+    return head + '<ol class="wp-ideas">' + m.list.map((x, i) =>
+      '<li><button type="button" class="wp-idea" data-act="idea" data-i="' + i + '" data-focus="idea-' + i + '">' +
+      '<span class="wp-idea-t">' + esc(teamName(x.teamId)) + '</span>' +
+      '<span class="wp-idea-l"><i>You give</i> ' + names(x.give || []) + '</span>' +
+      '<span class="wp-idea-l"><i>You get</i> ' + names(x.get || []) + '</span>' +
+      '<span class="wp-idea-g">You <b class="good">' + sgn1(x.myGain) + '</b> · them <b class="good">' + sgn1(x.theirGain) + '</b> FP a week</span>' +
+      '</button></li>').join('') + '</ol>';
+  }
+
+  // The search can take a second or two, so the page paints first and the list fills in after.
+  let ideasPending = false;
+  function scheduleIdeas() {
+    if (ideasPending) return;
+    ideasPending = true;
+    const ver = S.lgVer;
+    setTimeout(() => {
+      ideasPending = false;
+      if (ver !== S.lgVer || !S.lg) return;
+      const L = S.base.league;
+      try {
+        S.memo.ideas = { list: needInsights('tradeIdeas').tradeIdeas({ league: L, sched: S.base.sched, factors: factorsFor(L.isPoints), rosters: S.lg.rosters || {}, myTeamId: S.base.myTeamId, fromSp: fromSp() }) || [] };
+      } catch (err) {
+        if (window.console) console.error(err);
+        S.memo.ideas = { error: err, list: [] };
+      }
+      if (S.view === 'trades') renderIdeas();
+    }, 40);
+  }
+
+  function tradesHTML() {
+    return '<div class="wp-view"><div class="wp-pair">' +
+      '<section class="wp-sec" id="wp-analyzer" aria-labelledby="h-an">' + analyzerHTML() + '</section>' +
+      '<section class="wp-sec" id="wp-ideas" aria-labelledby="h-ideas">' + ideasHTML() + '</section>' +
+      '</div></div>';
+  }
+
+  function renderAnalyzer() {
+    const el = document.getElementById('wp-analyzer');
+    if (!el || !S.lg) return;
+    const f = captureFocus();
+    el.innerHTML = analyzerHTML();
+    restoreFocus(f);
+  }
+  function renderIdeas() {
+    const el = document.getElementById('wp-ideas');
+    if (el && S.lg) el.innerHTML = ideasHTML();
+  }
+  function renderTradeResult() {
+    const el = document.getElementById('wp-trade-result');
+    if (!el) return;
+    el.innerHTML = tradeResultHTML();
+    ['give', 'get'].forEach((side) => {
+      const c = app.querySelector('[data-count="' + side + '"]');
+      if (c) c.textContent = countText(S.trade[side].size);
+    });
+  }
+
+  function loadIdea(i) {
+    const m = S.memo.ideas;
+    const x = m && m.list && m.list[i];
+    if (!x) return;
+    S.trade = { team: String(x.teamId), give: new Set((x.give || []).map((p) => String(p.id))), get: new Set((x.get || []).map((p) => String(p.id))) };
+    renderAnalyzer();
+    const el = document.getElementById('wp-analyzer');
+    if (el) { try { el.scrollIntoView({ block: 'start', behavior: reduceMotion() ? 'auto' : 'smooth' }); } catch (e) { /* older browsers */ } }
+    const res = document.getElementById('wp-trade-result');
+    if (res) res.focus({ preventScroll: true });
+  }
+
+  /* ---- League */
+
+  function leagueHTML() {
+    const L = S.base.league, me = String(S.base.myTeamId);
+    const rows = memo('power', () => needInsights('powerRankings').powerRankings({
+      league: L, sched: S.base.sched, factors: factorsFor(L.isPoints), rosters: (S.lg && S.lg.rosters) || {}, matchups: (S.lg && S.lg.matchups) || [], fromSp: fromSp(),
+    })) || [];
+    const top = rows.reduce((m, r) => Math.max(m, isNum(r.strength) ? r.strength : 0), 0);
+    const body = rows.map((r) => {
+      const mine = String(r.teamId) === me;
+      const w = top > 0 && isNum(r.strength) ? Math.max(4, Math.round((r.strength / top) * 100)) : 0;
+      return '<tr' + (mine ? ' class="is-me"' : '') + '>' +
+        '<th scope="row" class="wp-stick"><span class="wp-tm"><span class="wp-rk">' + r.rank + '</span><span class="wp-tm-n">' + esc(r.name) + '</span>' + (mine ? '<span class="wp-tag wp-tag--you">You</span>' : '') +
+        '</span></th>' +
+        '<td>' + esc(recText(r.record)) + '</td>' +
+        '<td>' + f1(r.pf) + '</td>' +
+        '<td class="wp-sc"><span>' + f1(r.strength) + '</span><i class="wp-sbar" style="width:' + w + '%"></i></td>' +
+        '<td>' + f1(r.sos) + '</td></tr>';
+    }).join('');
+    return '<div class="wp-view"><section class="wp-sec" aria-labelledby="h-power">' +
+      secHead('h-power', 'Power rankings', 'Strength is the points a week each team’s best lineup should score over the next 28 days, from today’s rosters. Schedule is the average strength of the opponents still to come this regular season, so a higher number is a tougher road.') +
+      (rows.length
+        ? '<div class="wp-tscroll wp-tscroll--power" tabindex="0" role="region" aria-label="Power rankings"><table class="wp-dt wp-dt--power"><caption class="wp-sr">Power rankings</caption>' +
+          '<thead><tr><th scope="col" class="wp-stick">Team</th><th scope="col">Record</th><th scope="col">Points for</th><th scope="col">Strength a week</th><th scope="col">Schedule</th></tr></thead>' +
+          '<tbody>' + body + '</tbody></table></div>'
+        : '<div class="wp-empty"><p>No teams to rank yet. Refresh to load every roster.</p></div>') +
+      '</section></div>';
+  }
+
+  function leagueBodyHTML() {
+    if (!S.lg) {
+      if (S.lgError) return errorHTML(S.lgError, 'Could not load league data', 'retry-league');
+      return loadingHTML('Loading every roster in the league…');
+    }
+    try {
+      switch (S.view) {
+        case 'playoffs': return playoffsHTML();
+        case 'trends': return trendsHTML();
+        case 'trades': return tradesHTML();
+        default: return leagueHTML();
+      }
+    } catch (err) {
+      if (window.console) console.error(err);
+      const names = { playoffs: 'the playoff planner', trends: 'trends', trades: 'trades', league: 'the power rankings' };
+      return softErrorHTML('Could not build ' + (names[S.view] || 'this view'), err);
+    }
   }
 
   /* --------------------------------------------------------------- rendering */
@@ -784,6 +1240,7 @@
   }
 
   function bodyHTML() {
+    if (S.view !== 'week') return leagueBodyHTML();
     if (S.error && !S.vm) return errorHTML(S.error);
     if (!S.vm) return loadingHTML('Loading ' + ((S.base && S.base.weeks[S.weekIdx] && S.base.weeks[S.weekIdx].label) || 'week') + '…');
     const vm = S.vm;
@@ -795,11 +1252,11 @@
       footHTML();
   }
 
-  function errorHTML(err) {
+  function errorHTML(err, title, act) {
     const msg = (err && err.message) || String(err || 'Unknown error');
-    return '<div class="wp-panel wp-errorpanel" role="alert"><h2>Could not load this week</h2>' +
+    return '<div class="wp-panel wp-errorpanel" role="alert"><h2>' + esc(title || 'Could not load this week') + '</h2>' +
       '<p>' + esc(msg) + '</p><p class="wp-dim">Check your connection and that the server is still running, then try again.</p>' +
-      '<div class="wp-form-actions"><button type="button" class="wp-btn wp-btn--primary" data-act="retry">Try again</button></div></div>';
+      '<div class="wp-form-actions"><button type="button" class="wp-btn wp-btn--primary" data-act="' + (act || 'retry') + '">Try again</button></div></div>';
   }
 
   function renderBody() {
@@ -807,25 +1264,83 @@
     if (!el) return;
     const f = captureFocus();
     const y = window.scrollY;
-    if (S.vm && S.gridWeek === S.vm.week.id) {
+    const onWeek = S.view === 'week';
+    if (onWeek && S.vm && S.gridWeek === S.vm.week.id) {
       const sc = el.querySelector('.wp-scroll');
       if (sc) S.gridLeft = sc.scrollLeft;
     }
-    el.classList.toggle('is-busy', !!(S.loading && S.vm));
+    el.classList.toggle('is-busy', !!(onWeek && S.loading && S.vm));
     el.innerHTML = bodyHTML();
     watchGrid();
     alignGrid();
     restoreFocus(f);
-    if (S.vm && y) window.scrollTo(0, y);
-    if (S.vm && S.base) {
-      const w = S.base.weeks[S.weekIdx];
-      document.title = (w ? w.label + ' · ' : '') + 'Week planner';
+    if ((onWeek ? S.vm : S.lg) && y) window.scrollTo(0, y);
+    if (S.base) {
+      if (onWeek && S.vm) {
+        const w = S.base.weeks[S.weekIdx];
+        document.title = (w ? w.label + ' · ' : '') + 'Week planner';
+      } else if (!onWeek) {
+        const v = VIEWS.filter((x) => x[0] === S.view)[0];
+        document.title = (v ? v[1] + ' · ' : '') + 'Week planner';
+      }
     }
   }
 
-  function renderShell() {
-    app.innerHTML = '<main class="wp-wrap"><h1 class="wp-sr">Week planner</h1><div id="wp-top"></div><div id="wp-body"></div></main>';
+  function renderViews() {
+    const el = document.getElementById('wp-views');
+    if (!el) return;
+    const f = captureFocus();
+    el.innerHTML = viewsHTML();
+    restoreFocus(f);
+  }
+
+  // The League, Trends, Trades and Playoffs views share one cached loadLeague() result.
+  function ensureLeague(opts) {
+    opts = opts || {};
+    if (S.phase !== 'ready') return;
+    if (S.lg && !opts.force) return;
+    if (S.lgLoading && !opts.force) return;
+    if (!S.client || typeof S.client.loadLeague !== 'function') {
+      S.lgError = new Error('The data layer cannot load league-wide data yet. Update espn.js, then reload this page.');
+      return;
+    }
+    const my = ++S.lgToken;
+    S.lgLoading = true;
+    S.lgError = null;
+    if (!opts.keep) { S.lg = null; resetDerived(); }
+    const done = () => { if (S.view !== 'week') { renderTop(); renderBody(); } };
+    let p;
+    try { p = Promise.resolve(S.client.loadLeague(S.base)); } catch (err) { p = Promise.reject(err); }
+    p.then((data) => {
+      if (my !== S.lgToken) return;
+      S.lg = data || { rosters: {}, matchups: [], freeAgents: [] };
+      S.lgLoading = false;
+      resetDerived();
+      done();
+    }, (err) => {
+      if (my !== S.lgToken) return;
+      S.lgLoading = false;
+      if (handleLoadError(err)) return;
+      if (window.console) console.error(err);
+      if (!S.lg) S.lgError = err;
+      done();
+    });
+  }
+
+  function setView(v) {
+    if (VIEWS.every((x) => x[0] !== v) || v === S.view) return;
+    S.view = v;
+    store.set('wp:view', v);
+    if (v !== 'week') ensureLeague();
     renderTop();
+    renderViews();
+    renderBody();
+  }
+
+  function renderShell() {
+    app.innerHTML = '<main class="wp-wrap"><h1 class="wp-sr">Week planner</h1><div id="wp-top"></div><div id="wp-views"></div><div id="wp-body"></div></main>';
+    renderTop();
+    renderViews();
     renderBody();
   }
 
@@ -876,15 +1391,27 @@
     return false;
   }
 
+  // Win chance for the loaded week, computed once per week render. A bye or a finished week has none.
+  function computeWin(vm) {
+    try {
+      if (!vm || !vm.opp || vm.days.every((d) => d.kind === 'past')) return null;
+      const wp = needInsights('winProbability').winProbability(vm, { factors: factorsFor(vm.isPoints) });
+      return wp && isNum(wp.pWin) ? wp : null;
+    } catch (err) {
+      if (window.console) console.warn(err);
+      return null;
+    }
+  }
+
   async function loadWeekAt(idx, opts) {
     const silent = !!(opts && opts.silent);
     const my = ++S.token;
     S.weekIdx = idx;
     S.error = null;
     S.loading = true;
-    if (!silent) S.vm = null;
+    if (!silent) { S.vm = null; S.wp = null; }
     renderTop();
-    renderBody();
+    if (S.view === 'week') renderBody();
     try {
       const week = S.base.weeks[idx];
       const ctx = await S.client.loadWeek(S.base, week);
@@ -892,21 +1419,24 @@
       const vm = window.WPModel.computeWeek(ctx);
       if (my !== S.token) return;
       S.vm = vm;
+      S.wp = computeWin(vm);
       S.syncedAt = Date.now();
       S.loading = false;
     } catch (err) {
       if (my !== S.token) return;
       S.loading = false;
       if (handleLoadError(err)) return;
-      if (silent && S.vm) { S.error = null; } else { S.error = err; S.vm = null; }
+      if (silent && S.vm) { S.error = null; } else { S.error = err; S.vm = null; S.wp = null; }
       if (window.console) console.error(err);
     }
     renderTop();
-    renderBody();
+    if (S.view === 'week') renderBody();
   }
 
   async function boot() {
     S.phase = 'boot';
+    S.lg = null; S.lgError = null; S.lgLoading = false; S.lgToken++;
+    resetDerived();
     render();
     try {
       if (!window.WPData || !window.WPModel) throw new Error('model.js or espn.js did not load. Make sure both files sit next to index.html, then reload.');
@@ -928,6 +1458,7 @@
       S.base = await S.client.loadBase();
       S.phase = 'ready';
       S.weekIdx = pickWeekIndex(S.base);
+      if (S.view !== 'week') ensureLeague();
       render();
       await loadWeekAt(S.weekIdx);
     } catch (err) {
@@ -956,6 +1487,9 @@
       if (window.console) console.error(err);
     }
     S.loading = false;
+    // League-wide data: reload now if it is on screen, otherwise drop it so the next visit loads fresh.
+    if (S.view !== 'week') { ensureLeague({ force: true, keep: !!silent && !!S.lg }); renderBody(); }
+    else { S.lg = null; S.lgError = null; S.lgLoading = false; S.lgToken++; resetDerived(); }
     let idx = S.base.weeks.findIndex((w) => w.id === wid);
     if (idx < 0) idx = pickWeekIndex(S.base);
     await loadWeekAt(idx, { silent: !!silent || !!S.vm });
@@ -994,6 +1528,11 @@
       if (act === 'prev') return go(-1);
       if (act === 'next') return go(1);
       if (act === 'refresh') return refresh(false);
+      if (act === 'view') return setView(t.dataset.view);
+      if (act === 'retry-league') { ensureLeague({ force: true }); renderTop(); return renderBody(); }
+      if (act === 'retry-view') { resetDerived(); return renderBody(); }
+      if (act === 'idea') return loadIdea(parseInt(t.dataset.i, 10));
+      if (act === 'trade-clear') { S.trade.give.clear(); S.trade.get.clear(); return renderAnalyzer(); }
       if (act === 'retry') return S.base ? loadWeekAt(S.weekIdx) : boot();
       if (act === 'boot') return boot();
       if (act === 'setup') return goSetup('', S.cfg);
@@ -1007,7 +1546,14 @@
 
   app.addEventListener('change', (e) => {
     const t = e.target;
-    if (t && t.matches && t.matches('select[data-act="week"]')) loadWeekAt(clamp(parseInt(t.value, 10) || 0, 0, S.base.weeks.length - 1));
+    if (!t || !t.matches) return;
+    if (t.matches('select[data-act="week"]')) loadWeekAt(clamp(parseInt(t.value, 10) || 0, 0, S.base.weeks.length - 1));
+    else if (t.matches('select[data-act="trade-team"]')) { S.trade = { team: t.value || null, give: new Set(), get: new Set() }; renderAnalyzer(); }
+    else if (t.matches('input[data-act="trade-pick"]')) {
+      const set = t.dataset.side === 'give' ? S.trade.give : S.trade.get;
+      if (t.checked) set.add(t.dataset.id); else set.delete(t.dataset.id);
+      renderTradeResult();
+    }
   });
 
   app.addEventListener('submit', async (e) => {
@@ -1044,7 +1590,7 @@
   }, true);
 
   document.addEventListener('keydown', (e) => {
-    if (S.phase !== 'ready' || e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return;
+    if (S.phase !== 'ready' || S.view !== 'week' || e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return;
     if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
     const t = e.target;
     if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName) || (t.closest && t.closest('.wp-scroll')))) return;
