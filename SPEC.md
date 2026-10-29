@@ -337,3 +337,129 @@ Headshot: `https://a.espncdn.com/i/headshots/nba/players/full/<id>.png` (lazy; h
 - Copy: sentence case, plain verbs, no tracked ALL-CAPS eyebrow labels, no "→" on buttons, numbers formatted to 1 decimal.
   Errors say what happened and what to do. Empty states invite an action.
 - Accessibility: visible focus, `prefers-reduced-motion`, sufficient contrast, buttons are `<button>`.
+
+---
+
+# Phase 2 — league tools (contract, Oct 29 2026)
+
+Seven features on top of the week planner, from ESPN data and our own measurements only (never copy
+League Winner's data, files or wording). Same rules as above: stdlib Python, no build step, classic
+scripts with the UMD wrapper (always also set the browser global), sentence-case copy, numbers to
+1 decimal, slot pips as the signature element, works at 375px.
+
+## Files and owners
+
+```
+web/model.js           lead     adds WPModel.gameMult (done, see below)
+web/insights.js        agent A  pure logic, global WPInsights / module.exports. No fetch, no DOM.
+tests/insights.test.js agent A  node:test
+web/espn.js            agent B  new loader client.loadLeague + opts.fetch / opts.cookie
+web/demo-data.js       agent B  answers the new requests
+tools/digest.js        agent B  Node CLI printing the daily digest
+web/app.js             agent C  views + wiring
+web/styles.css         agent C
+web/index.html         agent C  add <script src="insights.js"> after model.js
+```
+
+### Already in model.js (lead)
+
+`WPModel.gameMult(sched, factors, proTeamId, sp) → { mult, b2b, play }`. `mult` = expected-points
+multiplier for that team's game on day `sp` (venue × opponent × back-to-back output × `play`), 1 when
+`factors` is null or the team has no game. `play` = chance of playing (factors.b2bPlay on the second
+night of a back-to-back, else 1). Expected points for a game = `projectPlayer(p).fp × mult`.
+Points leagues only: callers pass `factors = league.isPoints ? factors : null`.
+
+## web/insights.js (`WPInsights`) — agent A
+
+Common inputs: `league` (normLeague), `sched` (buildProSchedule), `weeks` (buildWeeks), `factors`
+(WPFactors or null), `season` = league.season, Players from `normPlayer`. All functions are pure and
+deterministic (seeded PRNG: mulberry32). Keep every function under ~2 s in Node for a 16-team league.
+
+1. `winProbability(vm, { factors, sims = 5000, seed = 1, cv = 0.35, dtdPlay = 0.75 })`
+   → `{ pWin, pTie, me: { mean, sd }, opp: { mean, sd } | null }`.
+   Score so far = `tw.actual`. For each row cell with `t === 'proj' && start && !out` (both teams):
+   play chance `q = (cell.b2b && factors ? factors.b2bPlay : 1) × (cell.dtd ? dtdPlay : 1)`;
+   points if he plays `x = cell.fp / (cell.b2b && factors ? factors.b2bPlay : 1)`;
+   each sim: with prob q add `max(0, x × (1 + cv × N(0,1)))`. `pWin` = share of sims me > opp,
+   ties count half and are reported in `pTie`. `vm.opp` null (bye) ⇒ `pWin` null, `opp` null.
+2. `winDelta(wp, gain)` → change in pWin if my mean rises by `gain` (normal approximation:
+   `Φ((m+gain−o)/s) − Φ((m−o)/s)`, `s = √(sdMe² + sdOpp²)`, guard s = 0); null when `wp.opp` is null.
+3. `playoffPlanner({ league, sched, weeks, factors, roster, freeAgents })`
+   → `{ weeks: [{ id, label, range }], teams: [{ proId, abbrev, games: {[weekId]: n}, total, b2b }],
+        mine: [{ player, proj, games: {[weekId]: n}, total, expFp }], fas: [same shape, top 25 by expFp] }`.
+   Playoff weeks = `weeks.filter(w => w.playoff)`. `teams` sorted by total desc then abbrev. `expFp` =
+   Σ expected points over all playoff days. `b2b` = second nights of back-to-backs in those weeks.
+   `mine` excludes nobody (IR players included, sorted by expFp desc); `fas` skip OUT players.
+4. `trends(players, season)` → rows `{ player, avg, n, l7, l15, n15, proj, mpg, mpgL15, startRate,
+   startRateL15, delta, tag, role }`. Stat entries (FP are `appliedAverage`): season `'00'+season`,
+   last 7 `'01'+season`, last 15 `'02'+season`, ESPN projection `'10'+season`. mpg = stats[40]/stats[42],
+   start rate = stats[41]/stats[42] (null when missing). `base = proj ?? avg`; `delta = l15 − base`.
+   `tag` (needs n15 ≥ 3): 'rising' if l15 ≥ 1.15 × base and l15 − base ≥ 3; 'falling' if
+   l15 ≤ 0.85 × base and base − l15 ≥ 3; else null. `role`: 'new starter' (startRate < 0.5 and
+   startRateL15 ≥ 0.6), 'lost start' (startRate ≥ 0.6 and startRateL15 < 0.4), 'more minutes'
+   (mpgL15 − mpg ≥ 4), 'fewer minutes' (≤ −4), checked in that order, else null.
+5. `buyLowSellHigh(rows, myTeamId)` (rows from trends over all rostered players; `row.player.onTeamId`
+   is set by the data layer) → `{ buyLow: rows on other teams with tag 'falling' and base ≥ 25, sorted
+   by delta asc (top 15), sellHigh: my rows with tag 'rising', sorted by delta desc }`.
+6. `rosValue({ league, sched, factors, roster, fromSp, toSp })` → `{ total, perWeek, days }`: Σ over
+   days of `bestLineup` total with `w = expected points` (IR slot 13 and OUT players excluded;
+   `league.caps`). `perWeek = days ? total / days × 7 : 0`.
+7. `analyzeTrade({ league, sched, factors, rosters, myTeamId, otherTeamId, give: [ids], get: [ids],
+   fromSp, toSp })` → `{ me: { before, after, delta }, them: { before, after, delta }, drops: { me: Player|null,
+   them: Player|null } }` using rosValue perWeek. A side that ends above `league.starters +
+   league.benchCount` non-IR players drops its lowest-projected non-IR player (report it).
+8. `tradeIdeas({ league, sched, factors, rosters, myTeamId, fromSp, horizonDays = 28, limit = 20 })`
+   → `[{ teamId, give: [Player], get: [Player], myGain, theirGain }]` (gains = perWeek deltas),
+   1-for-1, 2-for-1 and 1-for-2, both gains > 0, sorted by min(myGain, theirGain) desc. Prune
+   candidates (e.g. top 10 by projection on each side; for 2-for-1 the single player must out-project
+   each of the two) so a 16-team league runs under 2 s.
+9. `powerRankings({ league, sched, factors, rosters, matchups, fromSp })` → rows `{ rank, teamId, name,
+   abbrev, record: { wins, losses, ties }, pf, strength, sos }` sorted by strength desc. `strength` =
+   rosValue perWeek over the next 28 days; `record` from league.teams; `pf` = Σ of the team's totals in
+   matchups with mp < league.currentMp; `sos` = mean strength of its remaining regular-season
+   opponents (currentMp ≤ mp ≤ league.regularCount), null if none.
+10. `digest({ vm, wp, trendRows, today })` → plain text (one fact per line, no emoji): week label + range +
+   score, win chance, how many of my players play today, injuries on my roster (OUT / DTD), role
+   changes on my roster, best add for today (`vm.recs.byDay[today][0]`) or "No add worth it today".
+
+## web/espn.js additions — agent B
+
+- `WPData.create(opts)` also accepts `opts.fetch` (default `root.fetch`) and `opts.cookie` (string;
+  when set in direct mode, send it as a `Cookie` header and skip `credentials` — used only by the
+  Node digest).
+- `client.loadLeague(base)` → `{ rosters: { [teamId]: Player[] } (current roster of every team, each
+  Player with `onTeamId = teamId`), matchups: [ { mp, home, away } ] (every matchup of the season,
+  same shape as league.matchups), freeAgents: Player[] }`:
+  rosters: `get(L, views ['mRoster'], params { scoringPeriodId: cur }, ttl 300)` with no team filter;
+  matchups: `get(L, views ['mMatchup'], ttl 300)` with no filter, normalised exactly like normLeague's
+  matchups; freeAgents: the same request loadWeek makes (same cache key).
+- demo-data.js answers those: rosters for all 16 teams (procedural, plausible names/positions/stats incl.
+  '012027' and '022027' entries with stats 40/41/42 so some trends and role changes show up; keep teams
+  6 and 4 exactly as today), and all matchups of the season with totals for finished weeks.
+
+## tools/digest.js — agent B
+
+`node tools/digest.js [--demo]`: reads `config.json` (leagueId, season, teamId, espn_s2, swid), loads
+`web/factors.js`, `web/model.js`, `web/insights.js`, `web/espn.js` (and `web/demo-data.js` with --demo)
+into one vm context, creates the client in direct mode with Node's fetch and
+`cookie = 'espn_s2=<raw>; SWID=<swid>'` (demo mode with --demo), runs loadBase → current week →
+loadWeek → computeWeek → WPInsights.winProbability / trends / digest and prints the text. Exit 1 with a
+clear message on ESPN 401 or missing config. Never prints the cookies.
+
+## UI — agent C
+
+- View switcher under the top bar (buttons, `aria-pressed`): This week · Playoffs · Trends · Trades ·
+  League. Remember in localStorage `wp:view`. The week pager shows only on This week.
+- This week: hero shows "You win 58%" (or nothing on a bye) from `WPInsights.winProbability(vm,
+  { factors })` (factors = `window.WPFactors` when `vm.isPoints`, else null); night-card best add and
+  board rows show "+4% win chance" from `winDelta(wp, rec.gain)`. Compute once per week render.
+- Other views call `S.client.loadLeague(S.base)` once (cache in state; Refresh reloads it) and show the
+  pips loading state meanwhile; errors use the existing error pattern.
+- Playoffs: playoff weeks as columns; my players (games per week, total, expected points), NBA teams
+  grouped by total games, top free agents.
+- Trends: my roster table (avg, last 7, last 15, projection, delta, minutes trend, tags), then
+  "Buy low" and "Sell high" lists.
+- Trades: analyzer — choose a team, tick players to give and get, see before/after per week for both
+  sides and any forced drop; below, "Trade ideas" (click one to load it into the analyzer).
+- League: power rankings table (rank, team, record, points for, strength per week, schedule strength),
+  my team highlighted.

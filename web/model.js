@@ -313,6 +313,19 @@
 
   /* ---------------------------------------------------------- computeWeek */
 
+  // Expected points multiplier for one game: venue, opponent and the second night of a back-to-back
+  // (output and chance of playing). factors = WPFactors or null (then mult 1). play = chance of playing.
+  function gameMult(sched, factors, proTeamId, sp) {
+    const g = factors && teamGame(sched, proTeamId, sp);
+    if (!g) return { mult: 1, b2b: false, play: 1 };
+    const home = g.home === proTeamId;
+    const b2b = !!teamGame(sched, proTeamId, sp - 1);
+    const t = sched.teams[home ? g.away : g.home];
+    const opp = (factors.opp && t && factors.opp[t.abbrev]) || 1;
+    const play = b2b ? factors.b2bPlay : 1;
+    return { mult: (home ? factors.home : factors.away) * opp * (b2b ? factors.b2bOutput : 1) * play, b2b, play };
+  }
+
   function computeWeek(ctx) {
     const league = ctx.league, sched = ctx.sched, week = ctx.week, now = ctx.now, me = ctx.myTeamId;
     const caps = league.caps;
@@ -331,17 +344,8 @@
     const unstarted = (g) => !!g && !(isNum(g.date) && g.date <= now);
     const unstartedGame = (p, sp) => { const g = teamGame(sched, p.proTeamId, sp); return unstarted(g) ? g : null; };
     const abbrOf = (id) => (sched.teams[id] && sched.teams[id].abbrev) || '';
-    // Expected points for one game: the per-game projection adjusted for venue, opponent and
-    // the second night of a back-to-back (output and chance of playing). Points leagues only.
     const F = isPoints ? ctx.factors : null;
-    const gameFactor = (p, sp) => {
-      const g = F && teamGame(sched, p.proTeamId, sp);
-      if (!g) return { mult: 1, b2b: false };
-      const home = g.home === p.proTeamId;
-      const b2b = !!teamGame(sched, p.proTeamId, sp - 1);
-      const opp = (F.opp && F.opp[abbrOf(home ? g.away : g.home)]) || 1;
-      return { mult: (home ? F.home : F.away) * opp * (b2b ? F.b2bOutput * F.b2bPlay : 1), b2b };
-    };
+    const gameFactor = (p, sp) => gameMult(sched, F, p.proTeamId, sp);
     const expFp = (p, sp) => projOf(p).fp * gameFactor(p, sp).mult;
     const toCand = (p, sp) => ({ key: String(p.id), w: expFp(p, sp), slots: p.eligible || [] });
     const oppInfo = (g, proId) => { const home = g.home === proId; return { opp: abbrOf(home ? g.away : g.home), home }; };
@@ -667,6 +671,6 @@
     SLOT_NAMES, STARTING_EXCLUDE, OUT_STATUSES, STAT,
     etDate, addDays, diffDays, weekdayOf, fmtRange,
     normLeague, detectMyTeam, buildProSchedule, teamGame, spDate, dateSp, calendarWeekOf, calendarWeekSps,
-    buildWeeks, normPlayer, gameStat, boxOf, projectPlayer, bestLineup, computeWeek,
+    buildWeeks, normPlayer, gameStat, boxOf, projectPlayer, bestLineup, gameMult, computeWeek,
   };
 });
