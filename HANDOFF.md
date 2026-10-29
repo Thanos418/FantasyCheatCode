@@ -35,8 +35,8 @@ Ran the bundled `factors.js + model.js + insights.js + espn.js` inside the logge
 
 ## Still to do
 
-1. Put your cookies in `config.json` (see README), run `python server.py --check`, then `python server.py`
-   and `node tools/digest.js`. Not tested yet through the local proxy / Node with real cookies.
+1. Done Oct 29: cookies saved through the setup screen; `--check` OK, `node tools/digest.js` and all five
+   views work on live data through the local server.
 2. Create the private GitHub repo and push. `gh` is not installed on this PC:
    `winget install GitHub.cli`, `gh auth login`, then
    `gh repo create Thanos418/fantasy-week-planner --private --source=. --push`.
