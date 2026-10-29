@@ -42,3 +42,20 @@ close to theirs.
 2. Create the private GitHub repo and push. `gh` is not installed on this PC:
    `winget install GitHub.cli`, `gh auth login`, then
    `gh repo create Thanos418/fantasy-week-planner --private --source=. --push`.
+
+## Next features (roadmap, Oct 29 2026)
+
+Build all of these from ESPN data only (never copy League Winner's data, files or text):
+
+1. Matchup win probability: Monte Carlo of the rest of the week (per-game FP variance, back-to-back
+   play chance), "you win 58%", and how each recommended add changes it (show on night cards and board).
+2. Playoff schedule planner: games per NBA team in the fantasy playoff weeks (weeks with `playoff`),
+   for my roster and the top free agents.
+3. Trends and role changes: last 7/15 vs season vs projection, minutes and starts trend (stats 40, 41),
+   buy-low / sell-high lists.
+4. Trade analyzer: rest-of-season lineup-aware value of a trade for both teams (needs all rosters:
+   mRoster without rosterForTeamId), remaining games and factors included.
+5. Trade ideas inside the league: search 1-for-1 and 2-for-1 trades where both teams gain.
+6. League power rankings: rest-of-season strength of every team plus remaining schedule.
+7. Daily digest: `python server.py --digest` (or a script) printing injuries, role changes and the
+   night's best add, suitable for a scheduled task.
