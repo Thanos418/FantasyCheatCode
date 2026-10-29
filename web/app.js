@@ -514,8 +514,9 @@
       } else {
         main = f1(c.fp);
         cls = c.start ? ' is-start' : ' is-squeezed';
-        title = [dayName, c.home ? 'vs ' + c.opp : '@ ' + c.opp, 'Projected ' + main + ' FP', c.start ? 'starts' : 'squeezed out, your lineup is full', c.dtd ? 'day to day' : '', tipTxt].filter(Boolean).join(' · ');
+        title = [dayName, c.home ? 'vs ' + c.opp : '@ ' + c.opp, 'Projected ' + main + ' FP', c.start ? 'starts' : 'squeezed out, your lineup is full', c.dtd ? 'day to day' : '', c.b2b ? 'second night of a back-to-back, more likely to rest' : '', tipTxt].filter(Boolean).join(' · ');
         if (c.dtd) side = '<sup class="wp-q" title="Day to day">Q</sup>';
+        else if (c.b2b) side = '<sup class="wp-b2b" title="Second night of a back-to-back">B2B</sup>';
       }
     }
     return '<td class="wp-c' + cls + tcls + '" title="' + esc(title) + '"><span class="wp-fp">' + esc(main) + side + '</span>' + (opp ? '<span class="wp-op">' + esc(opp) + '</span>' : '') + '</td>';
