@@ -391,12 +391,39 @@
 
     const slotOrder = (r) => (r.gone ? 200 : r.player.slot === 12 ? 100 : r.player.slot === 13 ? 101 : r.player.slot == null ? 99 : r.player.slot);
 
+    // ---- my pending claims: each processes on the claimed player's waiver date. From that day the
+    // claimed player is on my bench and the dropped one is gone; that day's add is used by the claim.
+    const faById = new Map((ctx.freeAgents || []).map((p) => [p.id, p]));
+    const claims = [];
+    (ctx.transactions || []).forEach((t) => {
+      if (t.teamId !== me || t.status !== 'PENDING' || (t.type !== 'WAIVER' && t.type !== 'FREEAGENT')) return;
+      const items = t.items || [];
+      const drops = items.filter((i) => i.type === 'DROP');
+      items.filter((i) => i.type === 'ADD').forEach((a, i) => {
+        const p = faById.get(a.playerId) || null;
+        const sp = p && p.waiverDate ? dateSp(sched, etDate(p.waiverDate)) : null;
+        claims.push({ addId: a.playerId, dropId: drops[i] ? drops[i].playerId : null, sp: sp == null ? null : sp,
+          player: p ? Object.assign({}, p, { slot: 12, status: 'ONTEAM', claimFrom: sp }) : null });
+      });
+    });
+    const rosterOn = (teamId, current, sp) => {
+      if (teamId !== me) return current;
+      let r = current;
+      claims.forEach((c) => {
+        if (c.sp == null || sp < c.sp) return;
+        r = r.filter((p) => p.id !== c.dropId);
+        if (c.player && !r.some((p) => p.id === c.addId)) r = r.concat([c.player]);
+      });
+      return r;
+    };
+
     // ---- team computation
     function teamWeek(teamId) {
       const R = rosters[teamId] || { current: [], bySp: {} };
       const current = R.current || [];
       const bySp = R.bySp || {};
       const curIds = new Set(current.map((p) => p.id));
+      if (teamId === me) claims.forEach((c) => { if (c.sp != null && c.player) curIds.add(c.addId); });
       const rows = new Map();
       const rowFor = (p) => {
         let r = rows.get(p.id);
@@ -409,14 +436,15 @@
 
       function futureDay(sp, capsX, info) {
         const cands = [];
-        current.forEach((p) => {
+        const onRoster = rosterOn(teamId, current, sp);
+        onRoster.forEach((p) => {
           const g = unstartedGame(p, sp);
           if (!g) return;
           if (p.slot !== 13 && !isOut(p)) cands.push(toCand(p, sp));
         });
         const res = bestLineup(cands, capsX);
         const chosen = new Set(res.chosen.map((c) => c.key));
-        current.forEach((p) => {
+        onRoster.forEach((p) => {
           const g = unstartedGame(p, sp);
           if (!g) return;
           const oi = oppInfo(g, p.proTeamId);
@@ -435,7 +463,7 @@
         const info = { played: 0, playedPts: 0, remaining: 0, remProj: 0, withGame: 0, open: null };
         dayOut[sp] = info;
         if (kind === 'future') {
-          current.forEach((p) => { if (p.slot !== 13 && teamGame(sched, p.proTeamId, sp)) info.withGame++; });
+          rosterOn(teamId, current, sp).forEach((p) => { if (p.slot !== 13 && teamGame(sched, p.proTeamId, sp)) info.withGame++; });
           futureDay(sp, caps, info);
         } else {
           const rl = bySp[sp] || current;
@@ -484,6 +512,7 @@
         info.open = kind === 'past' ? null : Math.max(0, league.starters - info.played - info.remaining);
       });
 
+      if (teamId === me) claims.forEach((c) => { const r = rows.get(c.dropId); if (r && c.sp != null) r.leaves = c.sp; });
       const out = {
         rows: [], days: dayOut, played: 0, remaining: 0, remProj: 0, todayCaps,
         current,
@@ -556,12 +585,15 @@
     const pending = [];
     mine.filter((t) => t.status === 'PENDING').forEach((t) => {
       const drops = (t.items || []).filter((i) => i.type === 'DROP');
-      addItems(t).forEach((a, i) => pending.push({ add: nm(a.playerId), drop: drops[i] ? nm(drops[i].playerId) : null }));
+      addItems(t).forEach((a, i) => {
+        const c = claims.find((x) => x.addId === a.playerId);
+        pending.push({ add: nm(a.playerId), drop: drops[i] ? nm(drops[i].playerId) : null, sp: c ? c.sp : null });
+      });
     });
     const adds = { used, weekLimit, perDay: league.acq.perDay, limit: lim, todayUsed, pending };
 
     // ---- recommendations
-    const recs = { byDay: {}, board: [], note: null, spend: null };
+    const recs = { byDay: {}, board: [], note: null, spend: null, claimDays: {} };
     const remDays = sps.filter((sp) => kindOf(sp) !== 'past');
     const faAll = ctx.freeAgents || [];
     if (remDays.length && myRaw.current.length) {
@@ -578,7 +610,7 @@
       const capsFor = (sp) => (sp === cur && myRaw.todayCaps ? myRaw.todayCaps : caps);
       const baseCands = {}, baseRes = {}, baseV = {}, baseChosen = {};
       remDays.forEach((sp) => {
-        baseCands[sp] = roster.filter((p) => !isOut(p) && unstartedGame(p, sp)).map((p) => toCand(p, sp));
+        baseCands[sp] = rosterOn(me, myRaw.current, sp).filter((p) => p.slot !== 13 && !isOut(p) && unstartedGame(p, sp)).map((p) => toCand(p, sp));
         baseRes[sp] = bestLineup(baseCands[sp], capsFor(sp));
         baseV[sp] = baseRes[sp].total;
         baseChosen[sp] = new Set(baseRes[sp].chosen.map((c) => c.key));
@@ -592,6 +624,12 @@
       if (roster.length < league.starters + league.benchCount) options.push(null);
 
       const minAdd = (cur >= remDays[0] && league.acq.perDay && lim > 0 && todayUsed >= lim) ? cur + 1 : -Infinity;
+      // Days whose add a pending claim already uses (daily limits only).
+      const claimUse = {};
+      claims.forEach((c) => { if (c.sp != null) (claimUse[c.sp] = claimUse[c.sp] || []).push(c); });
+      const claimBlocks = (d) => !!(league.acq.perDay && lim > 0 && claimUse[d] && claimUse[d].length >= lim);
+      recs.claimDays = {};
+      remDays.forEach((d) => { if (claimBlocks(d)) recs.claimDays[d] = claimUse[d].map((c) => nm(c.addId)); });
 
       // Long-term side of a move: who is the better player after this week. Per-game projection times
       // an average week of games (82 games over ~24 weeks) for the next ltWeeks weeks. Later schedules
@@ -635,7 +673,7 @@
           return { r, rKey, delta, fCh, lineups };
         });
         remDays.forEach((d) => {
-          if (!fGame[d] || d < from) return;
+          if (!fGame[d] || d < from || claimBlocks(d)) return;
           let best = null;
           perOpt.forEach((o) => {
             let gain = 0, reach = 0, lost = 0;

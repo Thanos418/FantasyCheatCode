@@ -426,6 +426,8 @@ function buildCtx(opts) {
 }
 
 const rowOf = (tw, id) => tw.rows.find((r) => r.player.id === id);
+// The fixture has a pending claim (adds 202 from sp 11, drops 7). Tests about the roster without it use this.
+function noClaim(ctx) { return Object.assign(ctx, { transactions: ctx.transactions.filter((t) => t.status !== 'PENDING') }); }
 
 test('computeWeek: days, opponent, games per team', () => {
   const vm = M.computeWeek(buildCtx());
@@ -500,7 +502,7 @@ test('computeWeek: past days count only played active-slot players', () => {
 });
 
 test('computeWeek: gone rows and row ordering', () => {
-  const vm = M.computeWeek(buildCtx());
+  const vm = M.computeWeek(noClaim(buildCtx()));
   const ids = vm.me.rows.map((r) => r.player.id);
   assert.deepStrictEqual(ids.slice(0, 2), [1, 2]); // PG slot then C slot
   assert.deepStrictEqual(ids.slice(2, 4).sort(), [3, 4]); // UTIL
@@ -586,7 +588,7 @@ test('computeWeek: future days exclude OUT players and squeeze extras', () => {
 });
 
 test('computeWeek: team totals and projection', () => {
-  const vm = M.computeWeek(buildCtx());
+  const vm = M.computeWeek(noClaim(buildCtx()));
   assert.strictEqual(vm.me.played, 6);
   assert.strictEqual(vm.me.remaining, 3 + 3 + 3);
   assert.strictEqual(vm.me.total, vm.me.played + vm.me.remaining);
@@ -622,8 +624,6 @@ test('computeWeek: adds from transactions', () => {
   assert.strictEqual(vm2.adds.todayUsed, 0);
   assert.deepStrictEqual(vm2.adds.pending, []);
 });
-
-const noClaim = (ctx) => Object.assign(ctx, { transactions: ctx.transactions.filter((t) => t.status !== 'PENDING') });
 
 test('computeWeek: recommendations fill open slots and respect waivers / daily limit', () => {
   const vm = M.computeWeek(noClaim(buildCtx())); // without the pending claim, so Bo Seven (7) can be dropped
@@ -829,4 +829,23 @@ test('computeWeek: a pending claim is respected: its drop stays, its pickup is n
   all.forEach((r) => assert.ok(!r.drop || r.drop.id !== 7));
   assert.ok(!all.some((r) => r.fa.id === 202));
   assert.ok(!vm.recs.board.some((r) => r.fa.id === 202));
+});
+
+test('computeWeek: a pending claim joins the roster on its day and uses that day’s add', () => {
+  const vm = M.computeWeek(buildCtx());
+  // fixture: Wave Waiver (202, C, pro team 4) clears waivers on sp 11, Bo Seven (7) leaves
+  const claimed = rowOf(vm.me, 202);
+  assert.ok(claimed, 'claimed player has a row');
+  assert.strictEqual(claimed.gone, false);
+  assert.strictEqual(claimed.player.claimFrom, 11);
+  assert.deepStrictEqual(Object.keys(claimed.cells).map(Number), [11]); // team 4 plays sp 10 and 11; he is ours from 11
+  assert.strictEqual(rowOf(vm.me, 7).leaves, 11);
+  assert.strictEqual(vm.adds.pending[0].sp, 11);
+  // he raises sp 11: before, p3 35 + p5 10 + p8 8 = 53
+  const plain = M.computeWeek(noClaim(buildCtx()));
+  assert.ok(vm.me.days[11].remProj > plain.me.days[11].remProj);
+  // 1 add a day: the claim uses sp 11's add
+  assert.deepStrictEqual(vm.recs.claimDays[11].map((x) => x.id), [202]);
+  assert.deepStrictEqual(vm.recs.byDay[11], []);
+  assert.ok(vm.recs.board.every((b) => b.bestSp !== 11));
 });

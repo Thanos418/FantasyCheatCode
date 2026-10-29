@@ -684,3 +684,4 @@ body {
 #app .wp-add.is-spend .wp-add-k { color: var(--go); font-weight: 600; }
 #app .wp-add.is-hold .wp-add-k { color: var(--muted); }
 #app .wp-add.is-hold .wp-add-n, #app .wp-add.is-hold .wp-add-f, #app .wp-add.is-hold .wp-add-d { opacity: 0.75; }
+#app .wp-add.is-claim .wp-add-k { color: var(--go); font-weight: 600; }

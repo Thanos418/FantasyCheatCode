@@ -450,7 +450,7 @@
     const a = me.days[d.sp] || {};
     const b = opp ? opp.days[d.sp] || {} : null;
     const past = d.kind === 'past', today = d.kind === 'today';
-    const rosterN = me.rows.filter((r) => !r.gone && r.player && r.player.slot !== 13).length;
+    const rosterN = me.rows.filter((r) => !r.gone && r.player && r.player.slot !== 13 && !(r.player.claimFrom > d.sp) && !(r.leaves <= d.sp)).length; // pending claims applied
     const open = isNum(a.open) ? a.open : Math.max(0, n - gamesOf(a));
     const tip = tipOf(d.firstTip);
     const marker = d.heavy ? '<span class="wp-tag wp-tag--heavy" title="11 or more NBA games">Heavy night</span>' : d.light ? '<span class="wp-tag" title="5 or fewer NBA games">Light night</span>' : '';
@@ -474,7 +474,11 @@
       const recs = (vm.recs && vm.recs.byDay && vm.recs.byDay[d.sp]) || [];
       const adds = vm.adds || {};
       const dayBlocked = today && adds.perDay && adds.limit > 0 && adds.todayUsed >= adds.limit;
-      if (recs.length) {
+      const claimNames = vm.recs && vm.recs.claimDays && vm.recs.claimDays[d.sp];
+      if (claimNames && claimNames.length) {
+        addBlock = '<div class="wp-add is-claim"><p class="wp-add-k">Claim day</p><p class="wp-add-why">Your claim for <b>' +
+          claimNames.map((x) => esc(x.name)).join(', ') + '</b> processes today and uses this day’s add. He is in your lineup from tonight.</p></div>';
+      } else if (recs.length) {
         const alts = recs.slice(1);
         const top = recs[0];
         const label = top.spend ? 'Spend your add here' : top.worth === false ? 'Hold' : 'Best add';
@@ -523,7 +527,8 @@
     }
     const rule = a.limit === -1 ? 'no add limit' : a.perDay && a.limit > 0 ? 'limit ' + a.limit + ' per day' : a.limit > 0 ? 'limit ' + a.limit + ' per week' : '';
     const pending = (a.pending || []).map((p) =>
-      '<li>Add <b>' + esc(p.add && p.add.name) + '</b>' + (p.drop ? ', drop <b>' + esc(p.drop.name) + '</b>' : '') + '</li>').join('');
+      '<li>Add <b>' + esc(p.add && p.add.name) + '</b>' + (p.drop ? ', drop <b>' + esc(p.drop.name) + '</b>' : '') +
+      (p.sp != null && S.vm ? ' <span class="wp-dim">· processes ' + esc(dayLabel(S.vm, p.sp) || 'later') + '</span>' : '') + '</li>').join('');
     return '<div class="wp-adds">' + pips + '<p class="wp-adds-t">' + esc(main) + (rule ? ' · ' + esc(rule) : '') + '</p>' +
       (pending ? '<div class="wp-pending"><p>Pending claims</p><ul>' + pending + '</ul></div>' : '') + '</div>';
   }
@@ -587,7 +592,9 @@
       '<button type="button" class="wp-pbtn" data-key="' + esc(key) + '" aria-expanded="' + (open ? 'true' : 'false') + '">' +
       '<span class="wp-slot" aria-hidden="true">' + esc(slot) + '</span>' +
       faceHTML(p) +
-      '<span class="wp-pname"><span class="wp-pn">' + esc(p.name) + (inj ? ' <span class="wp-inj is-' + inj.cls + '" title="' + esc(inj.tip) + '">' + inj.t + '</span>' : '') + '</span>' +
+      '<span class="wp-pname"><span class="wp-pn">' + esc(p.name) + (inj ? ' <span class="wp-inj is-' + inj.cls + '" title="' + esc(inj.tip) + '">' + inj.t + '</span>' : '') +
+      (p.claimFrom != null && S.vm ? ' <span class="wp-tag wp-tag--go" title="Pending waiver claim">Claim · from ' + esc(dayLabel(S.vm, p.claimFrom)) + '</span>' : '') +
+      (r.leaves != null && S.vm ? ' <span class="wp-tag" title="Dropped by your pending claim">Leaves ' + esc(dayLabel(S.vm, r.leaves)) + '</span>' : '') + '</span>' +
       '<span class="wp-pm">' + esc(meta) + (slot ? '<span class="wp-pm-slot"> · ' + esc(slot) + '</span>' : '') + '</span></span>' +
       '<span class="wp-wkmini" aria-hidden="true">' + f1(r.total) + '</span>' +
       '</button></th>';

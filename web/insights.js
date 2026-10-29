@@ -582,7 +582,7 @@
     const rows = (me.rows || []).filter((r) => !r.gone);
     const day = (vm.days || []).find((d) => d.sp === today);
     if (day) {
-      const rostered = rows.filter((r) => r.player && r.player.slot !== 13);
+      const rostered = rows.filter((r) => r.player && r.player.slot !== 13 && !(r.player.claimFrom > today) && !(r.leaves <= today)); // roster on that day, pending claims applied
       const plays = rostered.filter((r) => {
         const c = r.cells && r.cells[today];
         return c && ((c.t === 'proj' && !c.out) || (c.t === 'played' && c.why !== 'away'));
@@ -602,7 +602,10 @@
     lines.push('Role changes: ' + (roles.length ? roles.join(', ') : 'none'));
 
     const rec = vm.recs && vm.recs.byDay && vm.recs.byDay[today] && vm.recs.byDay[today][0];
-    if (rec && rec.fa) {
+    const claimToday = vm.recs && vm.recs.claimDays && vm.recs.claimDays[today];
+    if (claimToday && claimToday.length) {
+      lines.push('Claim day: ' + claimToday.map((x) => x.name).join(', ') + ' joins today and uses today’s add');
+    } else if (rec && rec.fa) {
       const abbrevOf = (id) => {
         const gs = vm.gamesPerTeam || [];
         for (let i = 0; i < gs.length; i++) {
