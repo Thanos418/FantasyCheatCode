@@ -39,10 +39,14 @@ Then fill in `espn_s2` and `swid` in `config.json`. `leagueId`, `season` and `te
 
 The cookies expire after a while. When ESPN answers 401, copy fresh ones and save again.
 
+### Several leagues
+
+Your cookies belong to your ESPN account, so they work for every ESPN league you play in. To add one, open the league name in the top bar and choose **Add a league…**, then paste the league link. The same menu switches between saved leagues; the app opens the last one you used. Your team in each league is found from your SWID (or set it in the form), and each league keeps its own team id in `config.json` (`leagues`).
+
 ## Running
 
 ```
-python server.py --check     # test the saved cookies against ESPN, print league and team names, exit
+python server.py --check     # test the saved cookies against every saved league, print league and team names, exit
 python server.py             # start the server and open http://127.0.0.1:8765
 ```
 
@@ -63,8 +67,10 @@ Open `http://127.0.0.1:8765/?demo` to see the app on fake data. No cookies and n
 `tools/digest.js` prints the morning facts as plain text, one per line: the week score, your win chance, how many of your players play today, injuries, role changes and the best add. It needs Node 18 or newer (nothing to install) and reads `config.json` for the league and your ESPN cookies. It asks ESPN directly, so the local server does not have to be running.
 
 ```
-node tools/digest.js          # your league
-node tools/digest.js --demo   # fake league, no cookies needed
+node tools/digest.js                 # the league in use
+node tools/digest.js --league 12345  # another saved league, by id or part of its name
+node tools/digest.js --all           # every saved league
+node tools/digest.js --demo          # fake league, no cookies needed
 ```
 
 If the cookies are missing or ESPN rejects them, it says so and exits with code 1. The cookies are never printed. To get the digest every morning, run it from a scheduled task (Task Scheduler on Windows, cron on macOS/Linux). It keeps a small cache in `.cache/`, so repeat runs make few requests.

@@ -119,6 +119,7 @@ def load_config():
         "teamId": None,
         "espn_s2": "",
         "swid": "",
+        "leagues": [],  # every saved league: {leagueId, season, teamId, name}
     }
     error = None
     try:
@@ -135,10 +136,21 @@ def load_config():
         cfg["teamId"] = _to_int(raw.get("teamId"))
         cfg["espn_s2"] = str(raw.get("espn_s2") or "").strip()
         cfg["swid"] = str(raw.get("swid") or "").strip()
+        for item in raw.get("leagues") or []:
+            if isinstance(item, dict) and _to_int(item.get("leagueId")):
+                cfg["leagues"].append({
+                    "leagueId": _to_int(item.get("leagueId")),
+                    "season": _to_int(item.get("season")) or cfg["season"],
+                    "teamId": _to_int(item.get("teamId")),
+                    "name": str(item.get("name") or "").strip()[:80],
+                })
     except FileNotFoundError:
         pass
     except Exception as e:  # invalid JSON etc.
         error = "config.json could not be read (%s)" % e
+    # The top-level league is the one in use; it is always in the list.
+    if not any(l["leagueId"] == cfg["leagueId"] for l in cfg["leagues"]):
+        cfg["leagues"].insert(0, {"leagueId": cfg["leagueId"], "season": cfg["season"], "teamId": cfg["teamId"], "name": ""})
     cfg["_error"] = error
     return cfg
 
@@ -155,6 +167,7 @@ def public_config(cfg):
         "teamId": cfg["teamId"],
         "swid": cfg["swid"],
         "hasS2": bool(cfg["espn_s2"]),
+        "leagues": cfg["leagues"],
     }
     if cfg.get("_error"):
         out["error"] = cfg["_error"]
@@ -168,6 +181,7 @@ def save_config(cfg):
         "teamId": cfg["teamId"],
         "espn_s2": cfg["espn_s2"],
         "swid": cfg["swid"],
+        "leagues": cfg["leagues"],
     }
     tmp = CONFIG_PATH + ".tmp"
     with _config_lock:
@@ -220,10 +234,16 @@ def apply_config_update(body):
     cur = load_config()
     new = dict(cur)
     new.pop("_error", None)
+    new["leagues"] = [dict(l) for l in cur["leagues"]]
     season_from_url = None
     league_val = body.get("league", body.get("leagueId"))
     if league_val not in (None, ""):
         new["leagueId"], season_from_url = parse_league(league_val)
+        if new["leagueId"] != cur["leagueId"]:
+            # Switching league: start from what was saved for it (or detect the team from SWID).
+            saved = next((l for l in new["leagues"] if l["leagueId"] == new["leagueId"]), None)
+            new["season"] = saved["season"] if saved else cur["season"]
+            new["teamId"] = saved["teamId"] if saved else None
     if "season" in body and body["season"] not in (None, ""):
         season = _to_int(body["season"])
         if not season or not (2000 <= season <= 2100):
@@ -250,6 +270,21 @@ def apply_config_update(body):
         raise BadInput("espn_s2 is required.")
     if not new["swid"]:
         raise BadInput("SWID is required.")
+    remove = _to_int(body.get("removeLeague"))
+    if remove:
+        new["leagues"] = [l for l in new["leagues"] if l["leagueId"] != remove]
+        if remove == new["leagueId"]:
+            if not new["leagues"]:
+                raise BadInput("This is your only league. Add another one before removing it.")
+            first = new["leagues"][0]
+            new["leagueId"], new["season"], new["teamId"] = first["leagueId"], first["season"], first["teamId"]
+    entry = next((l for l in new["leagues"] if l["leagueId"] == new["leagueId"]), None)
+    if entry is None:
+        entry = {"leagueId": new["leagueId"], "name": ""}
+        new["leagues"].append(entry)
+    entry["season"], entry["teamId"] = new["season"], new["teamId"]
+    if isinstance(body.get("name"), str) and body["name"].strip():
+        entry["name"] = body["name"].strip()[:80]
     save_config(new)
     return new
 
@@ -707,13 +742,21 @@ def run_check():
     if cfg.get("_error"):
         say("Problem: " + cfg["_error"])
         return 1
-    say("Config: leagueId %s, season %s, cookies %s" % (
-        cfg["leagueId"], cfg["season"], "saved" if is_configured(cfg) else "missing"))
+    say("Config: leagueId %s, season %s, cookies %s, %d league(s) saved" % (
+        cfg["leagueId"], cfg["season"], "saved" if is_configured(cfg) else "missing", len(cfg["leagues"])))
     if not is_configured(cfg):
         say("Not configured. Start the server and fill in the setup form, or edit config.json "
             "(see config.example.json).")
         return 1
-    rest = "seasons/%d/segments/0/leagues/%d" % (cfg["season"], cfg["leagueId"])
+    failed = 0
+    for lg in cfg["leagues"]:
+        say("")
+        failed += check_league(cfg, lg)
+    return 1 if failed else 0
+
+
+def check_league(cfg, lg):
+    rest = "seasons/%d/segments/0/leagues/%d" % (lg["season"], lg["leagueId"])
     try:
         body, _ = espn_get(rest, "view=mSettings&view=mTeam&view=mStatus", None, 0, cfg, use_cache=False)
         data = json.loads(body.decode("utf-8"))
@@ -739,7 +782,7 @@ def run_check():
         if is_me:
             mine = t
         say("  %2s  %s%s" % (t.get("id"), team_label(t), "   <- you (SWID match)" if is_me else ""))
-    if mine is None and not cfg["teamId"]:
+    if mine is None and not lg["teamId"]:
         say("Warning: no team matches your SWID and teamId is not set. Set teamId in config.json.")
     say("OK")
     return 0

@@ -174,6 +174,7 @@
     const v = S.setup.values || {};
     const msg = S.setup.message;
     const val = (k) => (v[k] == null ? '' : esc(v[k]));
+    if (S.setup.add) return addLeagueHTML(msg, val);
     return '' +
       '<main class="wp-wrap wp-wrap--narrow">' +
       '<div class="wp-setup">' +
@@ -200,6 +201,60 @@
       '<p>The cookies expire after a while. When ESPN stops answering, repeat these steps and save again.</p>' +
       '</details>' +
       '</div></main>';
+  }
+
+  // Add another ESPN league. The saved cookies belong to the ESPN account, so they work for it too.
+  function addLeagueHTML(msg, val) {
+    return '' +
+      '<main class="wp-wrap wp-wrap--narrow">' +
+      '<div class="wp-setup">' +
+      '<h1 class="wp-setup-title">Add a league</h1>' +
+      '<p class="wp-lede">Paste the link of another ESPN league you play in. Your saved cookies work for every league on your ESPN account, so there is nothing else to copy.</p>' +
+      (msg ? '<p class="wp-alert" role="alert">' + esc(msg) + '</p>' : '') +
+      '<form class="wp-form" data-form="setup" autocomplete="off">' +
+      '<label class="wp-field"><span>League link or ID</span>' +
+      '<input name="league" type="text" required spellcheck="false" placeholder="https://fantasy.espn.com/basketball/league?leagueId=…" value="' + val('league') + '"></label>' +
+      '<label class="wp-field"><span>Your team ID <em>optional</em></span><input name="teamId" type="number" inputmode="numeric" placeholder="Found from your SWID" value="' + val('teamId') + '"></label>' +
+      '<div class="wp-form-actions"><button type="submit" class="wp-btn wp-btn--primary">Add and open league</button>' +
+      '<button type="button" class="wp-btn wp-btn--quiet" data-act="boot">Cancel</button></div>' +
+      '</form>' +
+      '</div></main>';
+  }
+
+  // League picker (local mode): every saved league plus "Add a league".
+  function leaguePickHTML(b) {
+    const cfg = S.cfg || {};
+    const name = (b.league && b.league.name) || 'Your league';
+    if (S.mode !== 'local' || !Array.isArray(cfg.leagues)) return '<span class="wp-league">' + esc(name) + '</span>';
+    const opts = cfg.leagues.map((l) => '<option value="' + esc(l.leagueId) + '"' + (l.leagueId === cfg.leagueId ? ' selected' : '') + '>' +
+      esc(l.leagueId === cfg.leagueId ? name : (l.name || 'League ' + l.leagueId)) + '</option>').join('') +
+      '<option value="add">Add a league…</option>';
+    return '<label class="wp-leaguepick"><span class="wp-league">' + esc(name) + '</span>' + ICON.caret +
+      '<select data-act="league" data-focus="league" aria-label="Choose league">' + opts + '</select></label>';
+  }
+
+  async function switchLeague(value) {
+    if (value === 'add') { S.setup = { add: true, message: '', values: {} }; S.phase = 'setup'; return render(); }
+    try {
+      const res = await fetch('/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ league: value }) });
+      if (!res.ok) throw new Error('The server refused to switch league (' + res.status + ').');
+      window.location.reload();
+    } catch (err) {
+      S.fatal = { title: 'Could not switch league', message: (err && err.message) || String(err) };
+      S.phase = 'fatal';
+      render();
+    }
+  }
+
+  // Remember the league name and the team found from SWID, so the picker and the digest know them.
+  function rememberLeague(cfg, base) {
+    if (S.mode !== 'local' || !base || !base.league || !Array.isArray(cfg.leagues)) return;
+    const entry = cfg.leagues.find((l) => l.leagueId === cfg.leagueId);
+    const name = base.league.name || '';
+    if (entry && entry.name === name && entry.teamId === base.myTeamId) return;
+    if (entry) { entry.name = name; entry.teamId = base.myTeamId; }
+    fetch('/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ league: cfg.leagueId, name, teamId: base.myTeamId }) })
+      .catch(() => { /* only a label; the app works without it */ });
   }
 
   /* --------------------------------------------------------------- top / hero */
@@ -233,14 +288,14 @@
         '<button type="button" class="wp-iconbtn" data-act="next" data-focus="next" aria-label="Next week"' + (i >= weeks.length - 1 ? ' disabled' : '') + '>' + ICON.next + '</button>' +
         '</div>';
     } else {
-      left = '<p class="wp-viewhead">' + esc((b.league && b.league.name) || 'Your league') + '</p>';
+      left = '<div class="wp-viewhead">' + leaguePickHTML(b) + '</div>';
     }
     return '' +
       '<div class="wp-top">' +
       left +
       '<div class="wp-sync">' +
       (S.mode === 'demo' ? '<span class="wp-tag wp-tag--demo" title="Fake ESPN data, nothing is read from your league">Demo data</span>' : '') +
-      (onWeek && b.league && b.league.name ? '<span class="wp-league">' + esc(b.league.name) + '</span>' : '') +
+      (onWeek ? leaguePickHTML(b) : '') +
       (synced ? '<span class="wp-synced">' + synced + '</span>' : '') +
       '<button type="button" class="wp-btn wp-btn--quiet' + (busy ? ' is-loading' : '') + '" data-act="refresh" data-focus="refresh"' + (busy ? ' aria-busy="true"' : '') + '>' + ICON.refresh + '<span>Refresh</span></button>' +
       '</div>' +
@@ -1477,6 +1532,7 @@
       S.cfg = cfg;
       S.client = window.WPData.create({ mode: S.mode, leagueId: cfg.leagueId, season: cfg.season, teamId: cfg.teamId || undefined, swid: cfg.swid || undefined });
       S.base = await S.client.loadBase();
+      rememberLeague(cfg, S.base);
       S.phase = 'ready';
       S.weekIdx = pickWeekIndex(S.base);
       if (S.view !== 'week') ensureLeague();
@@ -1569,6 +1625,7 @@
     const t = e.target;
     if (!t || !t.matches) return;
     if (t.matches('select[data-act="week"]')) loadWeekAt(clamp(parseInt(t.value, 10) || 0, 0, S.base.weeks.length - 1));
+    else if (t.matches('select[data-act="league"]')) switchLeague(t.value);
     else if (t.matches('select[data-act="trade-team"]')) { S.trade = { team: t.value || null, give: new Set(), get: new Set() }; renderAnalyzer(); }
     else if (t.matches('input[data-act="trade-pick"]')) {
       const set = t.dataset.side === 'give' ? S.trade.give : S.trade.get;
@@ -1583,7 +1640,9 @@
     e.preventDefault();
     const fd = new FormData(form);
     const v = (k) => String(fd.get(k) || '').trim();
-    const payload = { league: v('league'), espn_s2: v('espn_s2'), swid: v('swid') };
+    const payload = { league: v('league') };
+    if (v('espn_s2')) payload.espn_s2 = v('espn_s2');
+    if (v('swid')) payload.swid = v('swid');
     if (v('season')) payload.season = parseInt(v('season'), 10);
     if (v('teamId')) payload.teamId = parseInt(v('teamId'), 10);
     const btn = form.querySelector('button[type="submit"]');
@@ -1595,7 +1654,7 @@
       if (!res.ok) throw new Error(data.message || data.error || 'The server refused the settings (' + res.status + '). Check each field and save again.');
       window.location.reload();
     } catch (err) {
-      S.setup = { message: (err && err.message) || 'Could not save the settings.', values: { league: payload.league, season: payload.season || '', teamId: payload.teamId || '', swid: payload.swid } };
+      S.setup = { add: !!(S.setup && S.setup.add), message: (err && err.message) || 'Could not save the settings.', values: { league: payload.league, season: payload.season || '', teamId: payload.teamId || '', swid: payload.swid || '' } };
       render();
     }
   });

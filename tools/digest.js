@@ -2,8 +2,10 @@
 /* Daily digest: prints the facts you want each morning (score, win chance, who plays today, injuries,
    role changes, best add) as plain text, one fact per line. Suitable for a scheduled task.
 
-     node tools/digest.js          real league, reads config.json (leagueId, season, teamId, espn_s2, swid)
-     node tools/digest.js --demo   fake league, no cookies and no network
+     node tools/digest.js                  the league in use, reads config.json (leagues, espn_s2, swid)
+     node tools/digest.js --league <id|name>  another saved league
+     node tools/digest.js --all            every saved league, one after the other
+     node tools/digest.js --demo           fake league, no cookies and no network
 
    It runs the same code as the web app: web/factors.js, model.js, insights.js and espn.js are loaded into one
    vm context (plus demo-data.js with --demo). Exit code 0 on success, 1 with a message on stderr otherwise.
@@ -19,7 +21,7 @@ const WEB = path.join(ROOT, 'web');
 const DEFAULT_LEAGUE_ID = 1257343892;
 const GUID_RE = /^[0-9A-Fa-f]{8}(-[0-9A-Fa-f]{4}){3}-[0-9A-Fa-f]{12}$/;
 const REQUEST_TIMEOUT_MS = 30000;
-const USAGE = 'Usage: node tools/digest.js [--demo]';
+const USAGE = 'Usage: node tools/digest.js [--league <id or name> | --all | --demo]';
 
 class Fail extends Error {}
 
@@ -62,13 +64,28 @@ function readConfig() {
   if (!s2 || !swid) {
     throw new Fail('No ESPN cookies saved. Put espn_s2 and swid in config.json (README, "Getting espn_s2 and SWID") or save them in the app setup screen, then run this again.');
   }
-  return {
+  const cfg = {
     leagueId: toInt(raw.leagueId) || DEFAULT_LEAGUE_ID,
     season: toInt(raw.season) || (now.getMonth() >= 7 ? now.getFullYear() + 1 : now.getFullYear()),
     teamId: toInt(raw.teamId),
     s2: normS2(s2),
     swid: normSwid(swid),
   };
+  // Every saved league (the app's league picker); the top-level one is the league in use.
+  cfg.leagues = (Array.isArray(raw.leagues) ? raw.leagues : []).filter((l) => l && toInt(l.leagueId)).map((l) => ({
+    leagueId: toInt(l.leagueId), season: toInt(l.season) || cfg.season, teamId: toInt(l.teamId), name: String(l.name || ''),
+  }));
+  if (!cfg.leagues.some((l) => l.leagueId === cfg.leagueId)) cfg.leagues.unshift({ leagueId: cfg.leagueId, season: cfg.season, teamId: cfg.teamId, name: '' });
+  return cfg;
+}
+
+function pickLeagues(cfg, which, all) {
+  if (all) return cfg.leagues;
+  if (which == null) return [cfg.leagues.find((l) => l.leagueId === cfg.leagueId)];
+  const id = toInt(which), q = String(which).toLowerCase();
+  const hit = cfg.leagues.find((l) => l.leagueId === id) || cfg.leagues.find((l) => l.name && l.name.toLowerCase().includes(q));
+  if (!hit) throw new Fail('No saved league matches "' + which + '". Saved: ' + cfg.leagues.map((l) => (l.name || 'League') + ' (' + l.leagueId + ')').join(', ') + '.');
+  return [hit];
 }
 
 /* ------------------------------------------------------------------ context */
@@ -113,15 +130,26 @@ function pickWeek(base) {
 /* --------------------------------------------------------------------- main */
 
 async function main(argv) {
-  let demo = false;
-  argv.forEach((a) => {
+  let demo = false, all = false, which = null;
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
     if (a === '--demo') demo = true;
+    else if (a === '--all') all = true;
+    else if (a === '--league') { which = argv[++i]; if (which == null) throw new Fail('--league needs a league id or name. ' + USAGE); }
     else if (a === '-h' || a === '--help') { console.log(USAGE); process.exit(0); }
     else throw new Fail('Unknown option ' + a + '. ' + USAGE);
-  });
+  }
   if (!demo && typeof fetch !== 'function') throw new Fail('This needs Node 18 or newer (this is Node ' + process.versions.node + ').');
 
   const cfg = demo ? null : readConfig();
+  const leagues = demo ? [null] : pickLeagues(cfg, which, all);
+  for (let i = 0; i < leagues.length; i++) {
+    if (leagues.length > 1) console.log((i ? '\n' : '') + '== ' + (leagues[i].name || 'League ' + leagues[i].leagueId) + ' ==');
+    await digestOne(cfg, leagues[i], demo);
+  }
+}
+
+async function digestOne(cfg, lg, demo) {
   const secrets = cfg ? [cfg.s2, cfg.swid, cfg.swid.replace(/[{}]/g, '')] : [];
   const scrub = (msg) => secrets.reduce((m, s) => m.split(s).join('***'), String(msg));
 
@@ -131,7 +159,7 @@ async function main(argv) {
     const client = demo
       ? ctx.WPData.create(Object.assign({ mode: 'demo' }, ctx.WPDemo.config))
       : ctx.WPData.create({
-        mode: 'direct', leagueId: cfg.leagueId, season: cfg.season, teamId: cfg.teamId, swid: cfg.swid,
+        mode: 'direct', leagueId: lg.leagueId, season: lg.season, teamId: lg.teamId, swid: cfg.swid,
         cookie: 'espn_s2=' + cfg.s2 + '; SWID=' + cfg.swid, fetch: timeoutFetch,
       });
 

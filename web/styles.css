@@ -685,3 +685,10 @@ body {
 #app .wp-add.is-hold .wp-add-k { color: var(--muted); }
 #app .wp-add.is-hold .wp-add-n, #app .wp-add.is-hold .wp-add-f, #app .wp-add.is-hold .wp-add-d { opacity: 0.75; }
 #app .wp-add.is-claim .wp-add-k { color: var(--go); font-weight: 600; }
+
+/* League picker: the league name with a native select laid over it */
+#app .wp-leaguepick { position: relative; display: inline-flex; align-items: center; gap: 4px; color: var(--ink-2); cursor: pointer; border-radius: 6px; padding: 2px 4px; }
+#app .wp-leaguepick:hover { background: var(--surface); }
+#app .wp-leaguepick:focus-within { outline: 2px solid var(--you); outline-offset: 2px; }
+#app .wp-leaguepick select { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer; font: inherit; }
+#app .wp-viewhead .wp-league { font-weight: 600; color: var(--ink); }
