@@ -14,7 +14,7 @@ A local week planner for an ESPN fantasy basketball points league. It replicates
 
 Win chance comes from simulating the rest of the week 5,000 times with per-game spread, rest days and day-to-day players.
 
-Add suggestions weigh two things: points gained this week (extra games in your lineup) and how much better or worse the pickup is than the player you drop over the next 3 weeks (per-game projections times an average week of games). The week's best move is marked "Spend your add here"; a night whose best move only helps this week is a "Hold". Pending waiver claims are respected: their pickup is not suggested again and their drop is never suggested.
+Add suggestions weigh two things: points gained this week (extra games in your lineup) and what the pickup and the player you drop are expected to score over the next 3 weeks (their real games and opponents). The week's best move is marked "Spend your add here"; a night whose best move only helps this week is a "Hold". Pending waiver claims are respected: their pickup is not suggested again and their drop is never suggested.
 
 ## Requirements
 
@@ -82,16 +82,16 @@ Each player's points per game blend his current-season average with ESPN's seaso
 | Factor | Effect (2025-26 data) |
 |---|---|
 | Home / away | ×1.012 / ×0.988 |
-| Opponent | ×0.90 (BOS) to ×1.10, shrunk towards 1 |
+| Opponent | Last season's defense, moved towards this season's as games are played |
 | Second night of a back-to-back | ×1.009 output, ×0.923 chance of playing |
 
-The factors live in `web/factors.js`. They come from last season's public ESPN game logs for the 300 most rostered players. To rebuild them:
+The factors live in `web/factors.js`. They come from public ESPN game logs for the 300 most rostered players, last season and this one. Rerun this every week or so to keep the opponents current:
 
 ```
-python tools/build_factors.py            # --season 2026 --players 300 are the defaults
+python tools/build_factors.py            # --season 2026 --current 2027 --players 300 are the defaults
 ```
 
-Game logs are cached in `.cache/gamelogs/`. In category leagues the factors are off, so values are game counts.
+Finished seasons are cached in `.cache/gamelogs/`; the season in progress is read fresh. In category leagues the factors are off, so values are game counts.
 
 ## Tests
 

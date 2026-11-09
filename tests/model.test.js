@@ -767,14 +767,31 @@ test('normPlayer: live ESPN roster entry says NORMAL, the player carries the sta
   assert.strictEqual(ok.injury, 'ACTIVE');
 });
 
-const GPW = 82 / 24;
+// Games after week 2 (sp 14..34): teams 1 v 2 every day, teams 3 v 4 every other day (unless only12).
+function withLaterGames(ctx, only12) {
+  const extra = [];
+  for (let sp = 14; sp <= 34; sp++) {
+    extra.push({ id: 1000 + sp, sp, date: tip(sp), home: 1, away: 2 });
+    if (!only12 && sp % 2 === 0) extra.push({ id: 2000 + sp, sp, date: tip(sp), home: 3, away: 4 });
+  }
+  ctx.sched = M.buildProSchedule(proRawFrom(GAMES.concat(extra)));
+  return ctx;
+}
+function laterValue(ctx, p) {
+  let v = 0;
+  for (let sp = 14; sp <= 34; sp++) {
+    if (M.teamGame(ctx.sched, p.proTeamId, sp)) v += M.projectPlayer(p, 2027, true).fp * M.gameMult(ctx.sched, ctx.factors || null, p.proTeamId, sp).mult;
+  }
+  return v;
+}
 
-test('computeWeek: recommendations carry long-term value, net = gain + longTerm, sorted by net', () => {
-  const vm = M.computeWeek(buildCtx());
+test('computeWeek: long-term value counts real later games, net = gain + longTerm, sorted by net', () => {
+  const ctx = noClaim(withLaterGames(buildCtx()));
+  const vm = M.computeWeek(ctx);
   const all = [].concat(...Object.values(vm.recs.byDay));
   assert.ok(all.length > 0);
   all.forEach((r) => {
-    const want = (r.faProj.fp - (r.dropProj ? r.dropProj.fp : 0)) * GPW * 3;
+    const want = laterValue(ctx, r.fa) - (r.drop ? laterValue(ctx, r.drop) : 0);
     assert.ok(Math.abs(r.longTerm - want) < 1e-9);
     assert.ok(Math.abs(r.net - (r.gain + r.longTerm)) < 1e-9);
     assert.strictEqual(r.worth, r.net > 0.5);
@@ -787,6 +804,20 @@ test('computeWeek: recommendations carry long-term value, net = gain + longTerm,
   for (let i = 1; i < b.length; i++) assert.ok(b[i - 1].net >= b[i].net - 1e-9);
 });
 
+test('computeWeek: later opponents change the long-term value', () => {
+  const ctx = noClaim(withLaterGames(buildCtx()));
+  ctx.factors = { home: 1, away: 1, b2bOutput: 1, b2bPlay: 1, opp: { T2: 1.2, T1: 0.8 } };
+  const fa = (id, team) => M.normPlayer({ id, status: 'FREEAGENT', player: rawPlayer(id, 'Fa ' + id, team, CE, seasonStats(2027, { proj: 20 })) });
+  ctx.freeAgents = [fa(401, 1), fa(402, 2)]; // same player quality; team 1 faces T2 (easy), team 2 faces T1 (hard)
+  const vm = M.computeWeek(ctx);
+  const later = (id) => {
+    const r = vm.recs.board.find((x) => x.fa.id === id);
+    return r.longTerm + (r.drop ? laterValue(ctx, r.drop) : 0);
+  };
+  assert.ok(Math.abs(later(401) - 20 * 21 * 1.2) < 1e-9);
+  assert.ok(Math.abs(later(402) - 20 * 21 * 0.8) < 1e-9);
+});
+
 test('computeWeek: exactly one "spend your add here", on the best worthwhile move', () => {
   const vm = M.computeWeek(buildCtx());
   const tops = Object.values(vm.recs.byDay).map((l) => l[0]).filter(Boolean);
@@ -796,10 +827,11 @@ test('computeWeek: exactly one "spend your add here", on the best worthwhile mov
   tops.filter((r) => r.worth).forEach((r) => assert.ok(spends[0].net >= r.net - 1e-9));
 });
 
-test('computeWeek: a pickup worse than everyone you could drop is a hold', () => {
-  const ctx = noClaim(buildCtx());
-  // 2 FP a game: fills open slots this week (small gain) but is worse than every drop candidate
-  ctx.freeAgents = [M.normPlayer({ id: 301, status: 'FREEAGENT', player: rawPlayer(301, 'Low Free', 4, CE, seasonStats(2027, { proj: 2 })) })];
+test('computeWeek: a pickup with no later games who costs more than he adds is a hold', () => {
+  const ctx = noClaim(withLaterGames(buildCtx(), true)); // only teams 1 and 2 play after this week
+  // every droppable player moves to team 1, so dropping anyone costs his later games; the pickup (team 4) has none
+  ctx.rosters[6] = { current: ctx.rosters[6].current.map((p) => (p.slot === 13 ? p : Object.assign({}, p, { proTeamId: 1 }))), bySp: ctx.rosters[6].bySp };
+  ctx.freeAgents = [M.normPlayer({ id: 301, status: 'FREEAGENT', player: rawPlayer(301, 'Short Free', 4, CE, seasonStats(2027, { proj: 20 })) })];
   const vm = M.computeWeek(ctx);
   const r10 = vm.recs.byDay[10][0];
   assert.ok(r10, 'the week-only move is still listed');

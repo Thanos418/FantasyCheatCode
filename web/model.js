@@ -314,8 +314,6 @@
 
   /* ---------------------------------------------------------- computeWeek */
 
-  const GAMES_PER_WEEK = 82 / 24;
-
   // Expected points multiplier for one game: venue, opponent and the second night of a back-to-back
   // (output and chance of playing). factors = WPFactors or null (then mult 1). play = chance of playing.
   function gameMult(sched, factors, proTeamId, sp) {
@@ -631,11 +629,21 @@
       recs.claimDays = {};
       remDays.forEach((d) => { if (claimBlocks(d)) recs.claimDays[d] = claimUse[d].map((c) => nm(c.addId)); });
 
-      // Long-term side of a move: who is the better player after this week. Per-game projection times
-      // an average week of games (82 games over ~24 weeks) for the next ltWeeks weeks. Later schedules
-      // are left out on purpose: those weeks get streamed again. longTerm = pickup minus dropped player.
+      // Long-term side of a move: expected points over his real games in the next ltWeeks weeks after
+      // this one (opponents, venue and back-to-backs included). longTerm = pickup minus dropped player.
       const ltWeeks = ctx.longTermWeeks != null ? ctx.longTermWeeks : 3;
-      const ltOf = (p) => (p ? projOf(p).fp * GAMES_PER_WEEK * ltWeeks : 0);
+      const ltTo = Math.min(league.finalSp || Infinity, week.last + 7 * ltWeeks);
+      const ltCache = new Map();
+      const ltOf = (p) => {
+        if (!p) return 0;
+        let v = ltCache.get(p.id);
+        if (v == null) {
+          v = 0;
+          for (let sp = week.last + 1; sp <= ltTo; sp++) if (teamGame(sched, p.proTeamId, sp)) v += expFp(p, sp);
+          ltCache.set(p.id, v);
+        }
+        return v;
+      };
       const pool = [];
       faAll.forEach((f) => {
         if (isOut(f) || claimAdds.has(f.id)) return;

@@ -1,14 +1,15 @@
-"""Build per-game projection factors from last season's public ESPN data.
+"""Build per-game projection factors from public ESPN data.
 
-    python tools/build_factors.py [--season 2026] [--players 300]
+    python tools/build_factors.py [--season 2026] [--current 2027] [--players 300]
 
 Writes web/factors.js (global WPFactors, also require()-able) with:
   home / away      fantasy output at home vs away, relative to the player's season average
-  opp[ABBREV]      output against each opponent, shrunk towards 1
+  opp[ABBREV]      output against each opponent: last season's, moved towards this season's games
   b2bOutput        output on the second night of a back-to-back
   b2bPlay          chance of playing on that night, relative to a normal night
 Fantasy points use ESPN's default points scoring; only ratios are kept, so they carry over to
-other points scorings. Game logs are cached in .cache/gamelogs/ so reruns are quick.
+other points scorings. Finished seasons are cached in .cache/gamelogs/; the season in progress is
+read fresh, so rerun this every week or so to keep the opponents current.
 Stdlib only.
 """
 import argparse
@@ -29,6 +30,8 @@ UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like 
 MIN_GP = 20        # player needs this many games to have a stable average
 MIN_AVG = 15.0     # and at least this many fantasy points per game
 OPP_SHRINK = 150   # player-games of evidence needed to move an opponent factor halfway
+MIN_GP_CURRENT = 5    # same as MIN_GP, for the season in progress
+CURRENT_SHRINK = 75   # player-games this season needed to move an opponent halfway from last season's factor
 
 
 def get_json(url, headers=None):
@@ -69,9 +72,9 @@ def team_schedule(season):
     return game_sp, team_sps
 
 
-def gamelog(pid, season):
+def gamelog(pid, season, cache=True):
     path = os.path.join(ROOT, '.cache', 'gamelogs', '%d-%s.json' % (season, pid))
-    if os.path.exists(path):
+    if cache and os.path.exists(path):
         with open(path, encoding='utf-8') as f:
             return json.load(f)
     raw = get_json(GAMELOG.format(pid, season))
@@ -87,9 +90,10 @@ def gamelog(pid, season):
                 games.append({'id': e['eventId'], 'team': int(ev['team']['id']),
                               'opp': ev['opponent']['abbreviation'], 'home': ev['atVs'] != '@',
                               'stats': e['stats']})
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, 'w', encoding='utf-8') as f:
-        json.dump(games, f)
+    if cache:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, 'w', encoding='utf-8') as f:
+            json.dump(games, f)
     return games
 
 
@@ -102,17 +106,13 @@ def fantasy_points(stats):
     return pts + tpm + reb + 2 * ast + 4 * stl + 4 * blk - 2 * to + 2 * fgm - fga + ftm - fta
 
 
-def main():
-    ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
-    ap.add_argument('--season', type=int, default=2026, help='ESPN season to measure (2026 = 2025-26)')
-    ap.add_argument('--players', type=int, default=300, help='how many of the most rostered players to sample')
-    args = ap.parse_args()
-
-    game_sp, team_sps = team_schedule(args.season)
-    pids = top_players(args.season, args.players)
-    print('Reading %d game logs...' % len(pids), file=sys.stderr)
+def measure(season, limit, min_gp, cache):
+    """Add up one season's game logs: (sums, play counts, players used, game ids not in the schedule)."""
+    game_sp, team_sps = team_schedule(season)
+    pids = top_players(season, limit)
+    print('Reading %d game logs for %d...' % (len(pids), season), file=sys.stderr)
     with ThreadPoolExecutor(8) as pool:
-        logs = list(pool.map(lambda pid: gamelog(pid, args.season), pids))
+        logs = list(pool.map(lambda pid: gamelog(pid, season, cache), pids))
 
     sums = {}  # key -> [fantasy points, expected points, player-games]
 
@@ -127,7 +127,7 @@ def main():
     for games in logs:
         unmatched += sum(1 for g in games if g['id'] not in game_sp)
         games = [g for g in games if g['id'] in game_sp]
-        if len(games) < MIN_GP:
+        if len(games) < min_gp:
             continue
         fps = [fantasy_points(g['stats']) for g in games]
         avg = sum(fps) / len(fps)
@@ -152,7 +152,18 @@ def main():
                     kind = 'b2b' if (sp - 1) in team_sps[team] else 'rest'
                     played[kind][1] += 1
                     played[kind][0] += sp in sps
+    return sums, played, players, unmatched
 
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
+    ap.add_argument('--season', type=int, default=2026, help='last finished ESPN season (2026 = 2025-26)')
+    ap.add_argument('--current', type=int, help='season in progress (default: the one after --season)')
+    ap.add_argument('--players', type=int, default=300, help='how many of the most rostered players to sample')
+    args = ap.parse_args()
+    current = args.current or args.season + 1
+
+    sums, played, players, unmatched = measure(args.season, args.players, MIN_GP, True)
     ratio = lambda k: sums[k][0] / sums[k][1]
     base = ratio('all')
     opp = {}
@@ -160,9 +171,23 @@ def main():
         if key.startswith('opp:'):
             raw = (fp / exp) / base
             opp[key[4:]] = 1 + (raw - 1) * n / (n + OPP_SHRINK)
+
+    # Defenses change from year to year: this season's games move each team away from last season's number.
+    cur_sums, _, _, _ = measure(current, args.players, MIN_GP_CURRENT, False)
+    cur_games = 0
+    if 'all' in cur_sums:
+        cur_base = cur_sums['all'][0] / cur_sums['all'][1]
+        cur_games = cur_sums['all'][2]
+        for key, (fp, exp, n) in cur_sums.items():
+            if key.startswith('opp:') and key[4:] in opp:
+                raw = (fp / exp) / cur_base
+                opp[key[4:]] += (raw - opp[key[4:]]) * n / (n + CURRENT_SHRINK)
+
     rate = {k: v[0] / v[1] for k, v in played.items()}
     out = {
         'measuredOn': args.season,
+        'currentSeason': current,
+        'currentGames': cur_games,
         'built': datetime.date.today().isoformat(),
         'players': players,
         'games': sums['all'][2],

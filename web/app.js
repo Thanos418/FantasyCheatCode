@@ -495,7 +495,7 @@
     if (!isNum(rec.longTerm)) return '';
     const wk = rec.ltWeeks || 3;
     const who = rec.drop ? 'keeping ' + (rec.drop.last || rec.drop.name) : 'an empty spot';
-    return '<p class="wp-add-lt" title="Per-game projections over an average ' + wk + ' weeks of games (about ' + Math.round(wk * 82 / 24) + ')">Next ' + wk + ' weeks <span class="' + (rec.longTerm > 0.049 ? 'good' : rec.longTerm < -0.049 ? 'bad' : '') + '">' + sgn1(rec.longTerm) + ' FP</span> vs ' + esc(who) +
+    return '<p class="wp-add-lt" title="Expected points over each player’s real games and opponents in the next ' + wk + ' weeks">Next ' + wk + ' weeks <span class="' + (rec.longTerm > 0.049 ? 'good' : rec.longTerm < -0.049 ? 'bad' : '') + '">' + sgn1(rec.longTerm) + ' FP</span> vs ' + esc(who) +
       ' · total <b class="' + (rec.net > 0.5 ? 'good' : 'bad') + '">' + sgn1(rec.net) + '</b></p>';
   }
 
@@ -823,7 +823,7 @@
 
     return '' +
       '<div class="wp-sec-h wp-sec-h--split"><div><h2 id="h-board">Streaming board</h2>' +
-      '<p>Free agents ranked by value: points gained this week plus how much better or worse he is than the player you drop over the next ' + ((vm.recs && vm.recs.ltWeeks) || 3) + ' weeks. Orange pips are nights he would start for you.</p></div>' +
+      '<p>Free agents ranked by value: points gained this week plus his real games and opponents against those of the player you drop over the next ' + ((vm.recs && vm.recs.ltWeeks) || 3) + ' weeks. Orange pips are nights he would start for you.</p></div>' +
       '<div class="wp-pills" role="group" aria-label="Position">' + POS_FILTERS.map(pill).join('') + '</div></div>' +
       (rows.length ? '<div class="wp-board" style="--days:' + dayCols.length + '">' + head + '<ol class="wp-brows">' + list + '</ol></div>' : empty) +
       '<p class="wp-legend wp-legend--board"><span class="lg"><i class="wp-kp k-start"></i>would start</span><span class="lg"><i class="wp-kp k-squeezed"></i>game, lineup full</span><span class="lg"><i class="wp-kp k-none"></i>no game</span></p>';
