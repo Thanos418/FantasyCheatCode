@@ -136,13 +136,40 @@ test('winProbability: symmetric teams are about 50-50', () => {
   assert.ok(wp.pTie < 0.001);
   near(wp.me.mean, 300 + 12 * 30, 6);
   near(wp.opp.mean, 300 + 12 * 30, 6);
-  // sd of a sum of 12 independent N(30, 10.5) games
-  near(wp.me.sd, Math.sqrt(12) * 30 * 0.35, 2);
+  // with the extra uncertainty off: sd of a sum of 12 independent N(30, 10.5) games
+  const plain = I.winProbability({ me: teamOf(300, cells()), opp: teamOf(300, cells()) }, { sims: 8000, cv: 0.35, miss: 0, levelSd: 0 });
+  near(plain.me.sd, Math.sqrt(12) * 30 * 0.35, 2);
   // a stronger team wins more often, a bigger cv widens the spread
-  const strong = I.winProbability({ me: teamOf(300, rep(12, () => cellP(40))), opp: teamOf(300, cells()) });
+  const strong = I.winProbability({ me: teamOf(300, rep(12, () => cellP(50))), opp: teamOf(300, cells()) });
   assert.ok(strong.pWin > 0.9);
-  const wide = I.winProbability({ me: teamOf(300, cells()), opp: teamOf(300, cells()) }, { cv: 0.8 });
-  assert.ok(wide.me.sd > wp.me.sd * 1.8); // 0.8 vs 0.35, trimmed a little because games cannot go below zero
+  const wide = I.winProbability({ me: teamOf(300, cells()), opp: teamOf(300, cells()) }, { cv: 0.8, miss: 0, levelSd: 0 });
+  assert.ok(wide.me.sd > plain.me.sd * 1.8); // 0.8 vs 0.35, trimmed a little because games cannot go below zero
+});
+
+test('winProbability: surprise absences and level uncertainty widen the spread, not the mean', () => {
+  const run = (o) => I.winProbability({ me: teamOf(300, rep(12, () => cellP(30))), opp: teamOf(0, []) }, Object.assign({ sims: 20000, cv: 0.35, miss: 0, levelSd: 0 }, o));
+  const off = run({}), miss = run({ miss: 0.2 }), level = run({ levelSd: 0.3 });
+  near(miss.me.mean, off.me.mean, 6);
+  near(level.me.mean, off.me.mean, 6);
+  assert.ok(miss.me.sd > off.me.sd * 1.3);
+  assert.ok(level.me.sd > off.me.sd * 1.2);
+  const fac = { b2bPlay: 0.8 };
+  const b2b = I.winProbability({ me: teamOf(0, rep(10, () => cellP(80, { b2b: true }))), opp: teamOf(0, []) }, { sims: 20000, factors: fac, miss: 0.2 });
+  near(b2b.me.mean, 800, 10); // a back-to-back still is not inflated
+});
+
+test('winProbability: level uncertainty is shared by all the games of one player', () => {
+  const cells = () => ({ 10: cellP(30), 11: cellP(30), 12: cellP(30), 13: cellP(30) });
+  const o = { sims: 20000, cv: 0, miss: 0, levelSd: 0.3 };
+  const one = I.winProbability({ me: { actual: 0, rows: [{ player: { id: 1 }, cells: cells() }] }, opp: teamOf(0, []) }, o);
+  const four = I.winProbability({ me: teamOf(0, rep(4, () => cellP(30))), opp: teamOf(0, []) }, o);
+  near(one.me.sd, 4 * 30 * 0.3, 2);
+  near(four.me.sd, 2 * 30 * 0.3, 2);
+});
+
+test('winProbability: a modest lead is not called certain', () => {
+  const wp = I.winProbability({ me: teamOf(120, rep(40, () => cellP(30))), opp: teamOf(0, rep(40, () => cellP(30))) });
+  assert.ok(wp.pWin > 0.7 && wp.pWin < 0.97, String(wp.pWin));
 });
 
 test('winProbability: a bye gives no win chance and no opponent', () => {

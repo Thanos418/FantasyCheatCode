@@ -56,18 +56,20 @@
 
   /* ----------------------------------------------------- win probability */
 
-  function simTeam(tw, factors, dtdPlay) {
+  // miss: chance a starter sits without warning. His points are scaled up by the same amount, so the
+  // team's expected score (the projected finish) does not change, only how far it can swing.
+  function simTeam(tw, factors, dtdPlay, miss) {
     const b2bPlay = factors && factors.b2bPlay > 0 ? factors.b2bPlay : 1;
     const list = [];
-    ((tw && tw.rows) || []).forEach((r) => {
+    ((tw && tw.rows) || []).forEach((r, who) => {
       const cells = r.cells || {};
       Object.keys(cells).forEach((k) => {
         const c = cells[k];
         if (!c || c.t !== 'proj' || !c.start || c.out) return;
         const bp = c.b2b && factors ? b2bPlay : 1;
-        const q = bp * (c.dtd ? dtdPlay : 1);
-        const x = (isNum(c.fp) ? c.fp : 0) / bp;
-        list.push({ q, x });
+        const q = bp * (c.dtd ? dtdPlay : 1) * (1 - miss);
+        const x = (isNum(c.fp) ? c.fp : 0) / (bp * (1 - miss));
+        list.push({ q, x, who });
       });
     });
     return { base: (tw && isNum(tw.actual) ? tw.actual : 0), list };
@@ -77,18 +79,23 @@
     opts = opts || {};
     const factors = opts.factors || null;
     const sims = Math.max(1, Math.floor(opts.sims != null ? opts.sims : 5000));
-    const cv = opts.cv != null ? opts.cv : 0.35;
+    // Defaults fitted with tools/backtest.js on 2025-26 and checked on 2024-25.
+    const cv = opts.cv != null ? opts.cv : 0.4;
+    const miss = opts.miss != null ? opts.miss : 0.1;
+    const levelSd = opts.levelSd != null ? opts.levelSd : 0.25; // how wrong a player's level can be, shared by all his games
     const dtdPlay = opts.dtdPlay != null ? opts.dtdPlay : 0.75;
     const rng = mulberry32(opts.seed != null ? opts.seed : 1);
     const norm = makeNormal(rng);
-    const A = simTeam(vm.me, factors, dtdPlay);
-    const B = vm.opp ? simTeam(vm.opp, factors, dtdPlay) : null;
+    const A = simTeam(vm.me, factors, dtdPlay, miss);
+    const B = vm.opp ? simTeam(vm.opp, factors, dtdPlay, miss) : null;
 
     const one = (T) => {
       let s = T.base;
+      const level = [];
       for (let i = 0; i < T.list.length; i++) {
         const e = T.list[i];
-        if (e.q >= 1 || rng() < e.q) { const v = e.x * (1 + cv * norm()); if (v > 0) s += v; }
+        if (level[e.who] === undefined) level[e.who] = 1 + levelSd * norm();
+        if (e.q >= 1 || rng() < e.q) { const v = e.x * level[e.who] * (1 + cv * norm()); if (v > 0) s += v; }
       }
       return s;
     };

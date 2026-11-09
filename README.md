@@ -12,7 +12,7 @@ A local week planner for an ESPN fantasy basketball points league. It replicates
 | Trades | Analyzer for any trade with any team (both sides, next 4 weeks and rest of season, forced drops), and trade ideas that help both teams. |
 | League | Power rankings: record, points for, projected strength a week and remaining schedule. |
 
-Win chance comes from simulating the rest of the week 5,000 times with per-game spread, rest days and day-to-day players.
+Win chance comes from simulating the rest of the week 5,000 times with per-game spread, rest days, day-to-day players, starters who sit without warning and uncertainty about each player's level. Those settings were fitted on 2025-26 with the backtest and checked on 2024-25.
 
 Add suggestions weigh two things: points gained this week (extra games in your lineup) and what the pickup and the player you drop are expected to score over the next 3 weeks (their real games and opponents). The week's best move is marked "Spend your add here"; a night whose best move only helps this week is a "Hold". Pending waiver claims are respected: their pickup is not suggested again and their drop is never suggested.
 

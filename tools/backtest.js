@@ -450,6 +450,7 @@ function winChance(data, league, week, a, b, drafted, slots, sp, F, opts) {
     league: Object.assign({}, league, { currentSp: sp, currentMp: week.id, matchups: [{ mp: week.id, home: { teamId: a, total: 0, bySp: {} }, away: { teamId: b, total: 0, bySp: {} } }] }),
     sched: data.sched, week, now: morningOf(data, sp), myTeamId: a, rosters: { [a]: side(a), [b]: side(b) }, freeAgents: [], transactions: [], factors: F,
   });
+  if (opts.predict) return opts.predict(vm, F); // lets a fitting script try other win-chance settings
   return I.winProbability(vm, { factors: F, sims: opts.sims, seed: sp * 1000 + a }).pWin;
 }
 
@@ -640,4 +641,4 @@ if (require.main === module) {
   main(process.argv.slice(2)).catch((e) => { console.error('The backtest failed: ' + (e && e.message ? e.message : e)); process.exitCode = 1; });
 }
 
-module.exports = { fantasyPoints, below, measureSeason, seasonWeeks, makeData, playerAt, factorsAt, testProjections, testWindows, mulberry32, draft, roundRobin, makeLeague, lineupFor, scoreLineup, runLeague, calibrate, summarizePolicies, parseArgs };
+module.exports = { loadSeason, fantasyPoints, below, measureSeason, seasonWeeks, makeData, playerAt, factorsAt, testProjections, testWindows, mulberry32, draft, roundRobin, makeLeague, lineupFor, scoreLineup, runLeague, calibrate, summarizePolicies, parseArgs };
