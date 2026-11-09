@@ -93,6 +93,25 @@ python tools/build_factors.py            # --season 2026 --current 2027 --player
 
 Finished seasons are cached in `.cache/gamelogs/`; the season in progress is read fresh. In category leagues the factors are off, so values are game counts.
 
+## Backtest
+
+`tools/backtest.js` replays finished NBA seasons through the app's own code, using only what was known before each game. It needs Node 18 or newer and public ESPN data; no cookies.
+
+```
+node tools/backtest.js                # 2025-26 and 2024-25, 10 and 16 teams, 3 simulated leagues each (several minutes)
+node tools/backtest.js --quick        # one season, 10 teams, one league (under a minute)
+node tools/backtest.js --seasons 2026 --teams 12 --leagues 5 --players 400
+```
+
+| Question | How it is tested |
+|---|---|
+| How far off are the per-game projections, and which recipe is closest? | Every game of the season, real results |
+| Do real games and opponents beat an average schedule over the next 3 weeks? | Every player, every week, real results |
+| When the app says 70%, do you win 70% of the time? | Simulated leagues |
+| Does following the add suggestions beat standing still? | Simulated leagues |
+
+Your real leagues did not exist in those seasons, and ESPN keeps no past free-agent pools or daily injury lists, so the last two run on simulated leagues: rosters drafted from ESPN's preseason projections, the other teams stand still, nobody competes for free agents, and a player counts as out after missing his team's last 2 games. Treat those add-suggestion results as a ranking of strategies, not as points you would really gain. Fantasy points use ESPN's default points scoring.
+
 ## Tests
 
 ```
@@ -119,6 +138,7 @@ node --test
 | `web/insights.js` | Pure logic for win chance, playoffs, trends, trades, power rankings and the digest. |
 | `web/factors.js` | Per-game factors (venue, opponent, back-to-back), generated. |
 | `tools/build_factors.py` | Rebuilds `web/factors.js` from public ESPN game logs. |
+| `tools/backtest.js` | Replays past seasons through the app's code (`node tools/backtest.js`). |
 | `tools/digest.js` | Daily digest for the command line or a scheduled task (`node tools/digest.js`). |
 | `tests/` | Tests for the model (`node --test`). |
 | `SPEC.md` | Build spec and ESPN API notes. |

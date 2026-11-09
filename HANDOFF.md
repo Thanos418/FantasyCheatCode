@@ -41,6 +41,11 @@ Ran the bundled `factors.js + model.js + insights.js + espn.js` inside the logge
    `winget install GitHub.cli`, `gh auth login`, then
    `gh repo create Thanos418/fantasy-week-planner --private --source=. --push`.
 
+## Backtest
+
+`node tools/backtest.js` drives web/model.js and web/insights.js on 2024-25 and 2025-26 (see README). It stops
+with an error if its per-game recipe stops matching `WPModel.projectPlayer`, so it cannot drift from the app.
+
 ## Ideas for later
 
 - Win chance currently assumes starters who sit are not replaced from the bench.
