@@ -633,7 +633,7 @@
       const sp = vm.recs && vm.recs.spend;
       if (sp && sp !== rec && sp.fa) {
         const day = (vm.days || []).find((x) => x.sp === sp.sp);
-        lines.push('Best night for an add this week: ' + (day ? day.dow : 'sp ' + sp.sp) + ', ' + sp.fa.name + (sp.drop ? ' for ' + sp.drop.name : '') + ', total ' + (sp.net >= 0 ? '+' : '') + f1(sp.net) + ' FP');
+        lines.push('Best night for an add this week: ' + (day ? day.dow : 'sp ' + sp.sp) + ', ' + sp.fa.name + (sp.drop ? ' for ' + sp.drop.name : '') + ', total ' + (sp.net >= 0 ? '+' : '') + f1(sp.net) + ' FP' + (sp.waiver ? ' (waiver claim, processes that morning)' : ''));
       }
     } else {
       const note = vm.recs && vm.recs.note;

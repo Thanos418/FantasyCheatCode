@@ -484,6 +484,7 @@
     return '' +
       '<p class="wp-add-n"><strong>' + esc(fa.name) + '</strong> <span class="wp-meta">' + recMeta(rec) + '</span>' + (rec.waiver ? ' ' + waiverChip(fa) : '') + '</p>' +
       '<p class="wp-add-f">' + esc(facts) + '</p>' +
+      (rec.waiver ? '<p class="wp-add-why">Put in the claim before waivers clear on ' + esc(dayLabel(vm, rec.sp)) + ' morning.</p>' : '') +
       '<p class="wp-add-d">' + drop + ' <span class="wp-gain ' + (rec.gain > 0 ? 'good' : '') + '">' + sgn1(rec.gain) + ' FP this week</span>' +
       (rec.upgrade ? '' : ' <span class="wp-dim" title="Per game he is projected below the player he replaces. The gain comes from extra games in your lineup.">not an upgrade</span>') +
       winTag(rec.gain) +

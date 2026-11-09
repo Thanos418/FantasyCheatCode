@@ -664,6 +664,8 @@
         let avail = -Infinity;
         if (f.status === 'WAIVERS') avail = f.waiverDate ? dateSp(sched, etDate(f.waiverDate)) : cur;
         const from = Math.max(avail, minAdd);
+        // A claim happens the morning waivers process, game or no game; a free agent can wait for a night he plays.
+        const claimDay = f.status === 'WAIVERS' ? remDays.find((d) => d >= from) : null;
         const fGame = {};
         remDays.forEach((sp) => { fGame[sp] = !!unstartedGame(f, sp); if (fGame[sp]) fc[sp] = toCand(f, sp); });
         let fBest = null;
@@ -681,7 +683,7 @@
           return { r, rKey, delta, fCh, lineups };
         });
         remDays.forEach((d) => {
-          if (!fGame[d] || d < from || claimBlocks(d)) return;
+          if ((f.status === 'WAIVERS' ? d !== claimDay : !fGame[d] || d < from) || claimBlocks(d)) return;
           let best = null;
           perOpt.forEach((o) => {
             let gain = 0, reach = 0, lost = 0;

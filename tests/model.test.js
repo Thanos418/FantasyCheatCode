@@ -881,3 +881,30 @@ test('computeWeek: a pending claim joins the roster on its day and uses that day
   assert.deepStrictEqual(vm.recs.byDay[11], []);
   assert.ok(vm.recs.board.every((b) => b.bestSp !== 11));
 });
+
+test('computeWeek: a waiver claim counts from the morning it processes, not his first game', () => {
+  const ctx = noClaim(buildCtx());
+  // everyone starts (7 UTIL slots) and plays for team 1, which plays sp 10 but not sp 11
+  ctx.league = Object.assign({}, ctx.league, { caps: { 11: 7 }, starters: 7, benchCount: 0 });
+  ctx.rosters[6] = { current: ctx.rosters[6].current.map((p) => (p.slot === 13 ? p : Object.assign({}, p, { proTeamId: 1 }))), bySp: ctx.rosters[6].bySp };
+  // waivers clear on sp 10 (Oct 29); his team (2) has no game until sp 11
+  ctx.freeAgents = [M.normPlayer({ id: 501, status: 'WAIVERS', waiverProcessDate: Date.UTC(2026, 9, 29, 8, 0), player: rawPlayer(501, 'Late Claim', 2, CE, seasonStats(2027, { proj: 40 })) })];
+  const vm = M.computeWeek(ctx);
+  const r = vm.recs.byDay[10][0];
+  assert.strictEqual(r.fa.id, 501);
+  assert.strictEqual(r.sp, 10);
+  assert.strictEqual(r.waiver, true);
+  assert.strictEqual(r.drop.id, 7);
+  assert.ok(Math.abs(r.gain - (40 - 5)) < 1e-9, 'loses the dropped player\'s sp 10 game, gains the sp 11 game');
+  assert.strictEqual(r.gamesLost, 1);
+  assert.strictEqual(vm.recs.byDay[11].length, 0, 'not offered again on his first game');
+  assert.strictEqual(vm.recs.board.find((b) => b.fa.id === 501).bestSp, 10);
+});
+
+test('computeWeek: a free agent can still wait for a night he plays', () => {
+  const ctx = noClaim(buildCtx());
+  ctx.freeAgents = [M.normPlayer({ id: 502, status: 'FREEAGENT', player: rawPlayer(502, 'Free Later', 2, CE, seasonStats(2027, { proj: 40 })) })];
+  const vm = M.computeWeek(ctx);
+  assert.strictEqual(vm.recs.byDay[10].length, 0);
+  assert.strictEqual(vm.recs.byDay[11][0].fa.id, 502);
+});
