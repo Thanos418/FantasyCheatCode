@@ -2,7 +2,11 @@
 const test = require('node:test');
 const assert = require('node:assert');
 const M = require('../web/model.js');
-const I = require('../web/insights.js');
+const I0 = require('../web/insights.js');
+// Most tests here check the lineup arithmetic by hand, so the missed-games allowance is switched off for
+// them. It has its own tests at the end of the file, which call I0 directly.
+const plain = (fn) => (args) => fn(Object.assign({ availability: false }, args));
+const I = Object.assign({}, I0, { rosValue: plain(I0.rosValue), analyzeTrade: plain(I0.analyzeTrade), tradeIdeas: plain(I0.tradeIdeas), powerRankings: plain(I0.powerRankings) });
 const FACT = require('../web/factors.js');
 
 /* ------------------------------------------------------------ fixtures */
@@ -978,4 +982,93 @@ test('digest: works end-to-end on a real view model', () => {
   assert.ok(lines.some((l) => /^Win chance: \d+%$/.test(l)));
   assert.ok(lines.includes('Today: 4 of 4 players play'));
   assert.ok(lines.includes('No add worth it today'));
+});
+
+test('analyzeTrade: an Out player takes a free IR slot instead of forcing a drop', () => {
+  const outcome = (injury, onIr) => {
+    const fx = tradeFixture();
+    fx.rosters[4].find((p) => p.id === 13).injury = injury;
+    if (onIr) fx.rosters[6].push(mk(16, { team: 2, proj: 5, slot: 13, elig: PG, injury: 'OUT', name: 'ir' }));
+    // 1-for-2 leaves me one over the limit of 5
+    return I.analyzeTrade(Object.assign({}, fx.base, { rosters: fx.rosters, give: [3], get: [12, 13] })).drops.me;
+  };
+  assert.strictEqual(outcome('OUT', false), null);
+  assert.strictEqual(outcome('INJURY_RESERVE', false), null);
+  assert.strictEqual(outcome('SUSPENSION', false).id, 5);
+  assert.strictEqual(outcome('DAY_TO_DAY', false).id, 5);
+  assert.strictEqual(outcome('OUT', true).id, 5, 'the only IR slot is taken');
+});
+
+/* ------------------------------------------- availability and expected returns */
+
+test('rosValue: games are worth the share of them a player is expected to play', () => {
+  const sched = schedOf(4, everyDay(40));
+  const league = mkLeague({ cur: 11 }); // every team has played 10 games
+  const steady = mk(1, { team: 1, slot: 0, elig: PG, proj: 30, stats: [entry('00', 30, 10)] });
+  const fragile = mk(2, { team: 1, slot: 0, elig: PG, proj: 30, stats: [entry('00', 30, 5)] });
+  const args = { league, sched, factors: null, fromSp: 11, toSp: 24 };
+  near(I0.rosValue(Object.assign({ roster: [steady] }, args)).perWeek, 30 * 7 * 18.5 / 20, 1e-9);
+  near(I0.rosValue(Object.assign({ roster: [fragile] }, args)).perWeek, 30 * 7 * 13.5 / 20, 1e-9);
+  near(I0.rosValue(Object.assign({ roster: [fragile], availability: false }, args)).perWeek, 210, 1e-9);
+  // category leagues count games, so the allowance stays out
+  const cat = Object.assign({}, args, { league: mkLeague({ cat: true, cur: 11 }), roster: [fragile] });
+  assert.strictEqual(I0.rosValue(cat).perWeek, 7);
+});
+
+test('rosValue and trades: an out player counts from his expected return', () => {
+  const sched = schedOf(4, everyDay(40));
+  const league = mkLeague();
+  const hurt = (back) => { const p = mk(1, { team: 1, slot: 13, elig: PG, proj: 40, injury: 'OUT' }); if (back) p.back = back; return p; };
+  const args = { league, sched, factors: null, fromSp: 1, toSp: 14 };
+  assert.strictEqual(I.rosValue(Object.assign({ roster: [hurt(null)] }, args)).total, 0);
+  assert.strictEqual(I.rosValue(Object.assign({ roster: [hurt({ sp: 8, date: null, season: false })] }, args)).total, 40 * 7);
+  assert.strictEqual(I.rosValue(Object.assign({ roster: [hurt({ sp: Infinity, date: null, season: true })] }, args)).total, 0);
+  assert.strictEqual(I.rosValue(Object.assign({ roster: [hurt({ sp: 0, date: null, season: false })] }, args)).total, 40 * 14);
+  // the trade analyzer sees the same value: getting him is worth his games after the return
+  const fx = tradeFixture();
+  const star = mk(16, { team: 3, proj: 60, slot: 13, elig: CE, injury: 'OUT', name: 'star' });
+  fx.rosters[4].push(star);
+  const without = I.analyzeTrade(Object.assign({}, fx.base, { rosters: fx.rosters, give: [5], get: [16] }));
+  assert.strictEqual(without.me.delta, 0);
+  star.back = { sp: 8, date: null, season: false };
+  const withBack = I.analyzeTrade(Object.assign({}, fx.base, { rosters: fx.rosters, give: [5], get: [16] }));
+  // days 8..14: he fills the second C slot, +60 a day for 7 of the 14 days = +210 a week
+  assert.strictEqual(withBack.me.delta, 60 * 7 * 7 / 14);
+});
+
+test('winProbability: a return from injury keeps the expected score and adds doubt', () => {
+  const run = (extra) => I.winProbability({ me: teamOf(0, rep(10, () => cellP(30, extra))), opp: teamOf(0, []) }, { sims: 20000, cv: 0.35, miss: 0, levelSd: 0 });
+  const sure = run({}), back = run({ back: true });
+  near(back.me.mean, sure.me.mean, 6);
+  assert.ok(back.me.sd > sure.me.sd * 1.2);
+});
+
+test('digest: injuries carry ESPN\'s expected return', () => {
+  const hurt = (o) => Object.assign({ injury: 'OUT' }, o);
+  assert.strictEqual(I0.backText(hurt({ back: { sp: 20, date: '2026-11-24', season: false } })), ', back around Nov 24');
+  assert.strictEqual(I0.backText(hurt({ back: { sp: Infinity, date: null, season: true } })), ', out for the season');
+  assert.strictEqual(I0.backText(hurt({})), '');
+  assert.strictEqual(I0.backText({ injury: 'DAY_TO_DAY', back: { sp: 9, date: '2026-10-28', season: false } }), '');
+});
+
+test('digest: with a week plan, today is the plan\'s move and the plan is listed', () => {
+  const fx = digestFixture();
+  fx.vm.days = [{ sp: 9, kind: 'today', dow: 'Wed' }, { sp: 10, kind: 'future', dow: 'Thu' }];
+  const move = (sp, name, drop, extra) => Object.assign({ sp, fa: Object.assign({}, mk(60 + sp, { name, team: 2 }), { pos: 'PG' }), drop: drop ? mk(70 + sp, { name: drop }) : null, gain: 10, longTerm: 20, net: 30, ltWeeks: 3, worth: true, spend: true, waiver: false }, extra);
+  const held = { sp: 9, fa: mk(80, { name: 'Only Now', team: 1 }), drop: mk(81, { name: 'Keeper' }), gain: 4, longTerm: -30, net: -26, ltWeeks: 3, worth: false, waiver: false };
+  const after = Object.assign({}, fx.vm, { recs: { byDay: { 9: [held] }, note: null } });
+  // a move today
+  const today = { moves: [move(9, 'Plan Today', 'Sexton'), move(10, 'Plan Later', null, { waiver: true })], gain: 20, longTerm: 40, net: 60, vm: after };
+  const a = I.digest({ vm: fx.vm, wp: fx.wp, trendRows: [], today: 9, plan: today }).split('\n');
+  assert.ok(a.some((l) => l.startsWith('In your plan today: Plan Today') && l.includes('drop Sexton') && l.includes('+10.0 FP this week')));
+  assert.strictEqual(a[a.length - 1], 'Plan for the week: Wed Plan Today for Sexton; Thu Plan Later (waiver claim). +20.0 FP this week, +40.0 over the next 3 weeks');
+  assert.ok(!a.some((l) => l.startsWith('Best night')));
+  // no move today: what is left after the plan is a hold
+  const later = { moves: [move(10, 'Plan Later', 'Sexton')], gain: 10, longTerm: 20, net: 30, vm: after };
+  const b = I.digest({ vm: fx.vm, wp: fx.wp, trendRows: [], today: 9, plan: later }).split('\n');
+  assert.ok(b.some((l) => l.startsWith('Hold today. This week only: Only Now')));
+  assert.ok(b[b.length - 1].startsWith('Plan for the week: Thu Plan Later for Sexton.'));
+  // an empty plan adds no line, and the day keeps its fallback
+  const none = I.digest({ vm: fx.vm, wp: fx.wp, trendRows: [], today: 9, plan: { moves: [], gain: 0, longTerm: 0, net: 0, vm: Object.assign({}, fx.vm, { recs: { byDay: {}, note: null } }) } });
+  assert.ok(none.includes('No add worth it today') && !none.includes('Plan for the week'));
 });

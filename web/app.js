@@ -45,6 +45,13 @@
     catch (e) { return { time: new Date(ms).toTimeString().slice(0, 5), next: false }; }
   }
   const clock = (ms) => { const t = tipOf(ms); return t ? t.time : ''; };
+  // "Tue 08:00" in the viewer's own time zone
+  function localDayTime(v) {
+    const ms = toMs(v);
+    if (!isNum(ms)) return '';
+    try { return new Intl.DateTimeFormat('en-GB', { weekday: 'short' }).format(ms) + ' ' + fmtTime.format(ms); }
+    catch (e) { return ''; }
+  }
 
   const SLOT_FALLBACK = { 0: 'PG', 1: 'SG', 2: 'SF', 3: 'PF', 4: 'C', 5: 'G', 6: 'F', 7: 'SG/SF', 8: 'G/F', 9: 'PF/C', 10: 'F/C', 11: 'UTIL', 12: 'BN', 13: 'IR' };
   function slotLabel(id) {
@@ -53,15 +60,31 @@
     const M = window.WPModel;
     return (M && M.SLOT_NAMES && M.SLOT_NAMES[id]) || SLOT_FALLBACK[id] || '';
   }
-  function injuryTag(inj) {
-    switch (inj) {
-      case 'OUT': return { t: 'OUT', cls: 'bad', tip: 'Out' };
-      case 'INJURY_RESERVE': return { t: 'IR', cls: 'bad', tip: 'Injured reserve' };
-      case 'SUSPENSION': return { t: 'SUS', cls: 'bad', tip: 'Suspended' };
-      case 'DAY_TO_DAY': return { t: 'Q', cls: 'go', tip: 'Day to day' };
+  const MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  const shortDate = (d) => (/^\d{4}-\d{2}-\d{2}/.test(d || '') ? MON[+d.slice(5, 7) - 1] + ' ' + (+d.slice(8, 10)) : '');
+  // When ESPN's injury report expects a player back: a weekday inside the loaded week, a date after it,
+  // 'season' when the season is over for that player.
+  function backLabel(p) {
+    const b = p && p.back;
+    if (!b) return '';
+    if (b.season) return 'season';
+    const day = S.view === 'week' && S.vm ? S.vm.days.find((x) => x.sp === b.sp) : null; // league-wide views have no week to name days in
+    return day ? day.dow : shortDate(b.date);
+  }
+  function injuryTag(p) {
+    const back = backLabel(p);
+    const note = (p && p.news && p.news.note) || '';
+    const tip = (what, dated) => [what, dated && back ? (back === 'season' ? 'out for the season' : 'ESPN expects a return ' + back) : '', note].filter(Boolean).join(' · ');
+    const dated = (t) => t + (back ? ' · ' + back : '');
+    switch (p && p.injury) {
+      case 'OUT': return { t: dated('OUT'), cls: 'bad', tip: tip('Out', true) };
+      case 'INJURY_RESERVE': return { t: dated('IR'), cls: 'bad', tip: tip('Injured reserve', true) };
+      case 'SUSPENSION': return { t: dated('SUS'), cls: 'bad', tip: tip('Suspended', true) };
+      case 'DAY_TO_DAY': return { t: 'DTD', cls: 'go', tip: tip('Day to day', false) };
       default: return null;
     }
   }
+  const injHTML = (p) => { const inj = injuryTag(p); return inj ? ' <span class="wp-inj is-' + inj.cls + '" title="' + esc(inj.tip) + '">' + esc(inj.t) + '</span>' : ''; };
   const initials = (name) => {
     const parts = String(name || '').trim().split(/\s+/).filter(Boolean);
     if (!parts.length) return '?';
@@ -69,6 +92,17 @@
   };
 
   /* -------------------------------------------------------------------- state */
+
+  // The view lives in the address (#trades), so reload, Back and a bookmark all land on it.
+  const VIEW_IDS = ['week', 'playoffs', 'trends', 'trades', 'league'];
+  const hashView = () => { const h = String(window.location.hash || '').replace(/^#/, ''); return VIEW_IDS.indexOf(h) >= 0 ? h : null; };
+  // auto follows the system setting; light and dark override it (styles.css reads data-theme).
+  const THEMES = ['auto', 'light', 'dark'];
+  const THEME_LABEL = { auto: 'match system', light: 'light', dark: 'dark' };
+  function applyTheme(t) {
+    const el = document.documentElement;
+    if (t === 'light' || t === 'dark') el.setAttribute('data-theme', t); else el.removeAttribute('data-theme');
+  }
 
   const S = {
     mode: 'local',
@@ -90,8 +124,11 @@
     setup: { message: '', values: {} },
     fatal: null,
     // Phase 2 views
-    view: ['week', 'playoffs', 'trends', 'trades', 'league'].indexOf(store.get('wp:view')) >= 0 ? store.get('wp:view') : 'week',
+    view: hashView() || (VIEW_IDS.indexOf(store.get('wp:view')) >= 0 ? store.get('wp:view') : 'week'),
+    theme: THEMES.indexOf(store.get('wp:theme')) >= 0 ? store.get('wp:theme') : 'auto',
     wp: null, // win probability for the loaded week (WPInsights.winProbability)
+    plan: null, // the week plan for the loaded week (WPModel.planWeek)
+    enter: false, // the next body render is a new week: play the entrance once
     lg: null, // client.loadLeague result, cached until Refresh
     lgLoading: false,
     lgError: null,
@@ -100,6 +137,8 @@
     memo: {}, // derived league-wide results, cleared whenever lg changes
     trade: { team: null, give: new Set(), get: new Set() },
   };
+
+  applyTheme(S.theme);
 
   const proTeam = (id) => (S.base && S.base.sched && S.base.sched.teams && S.base.sched.teams[id]) || null;
   const proAbbrev = (id) => { const t = proTeam(id); return t ? t.abbrev : ''; };
@@ -110,6 +149,9 @@
     prev: '<svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path d="M10 3 5 8l5 5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>',
     next: '<svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path d="m6 3 5 5-5 5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>',
     caret: '<svg viewBox="0 0 12 12" width="12" height="12" aria-hidden="true"><path d="m2.5 4.5 3.5 3.5 3.5-3.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+    'theme-auto': '<svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><circle cx="8" cy="8" r="5.5" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M8 2.5a5.5 5.5 0 0 1 0 11z" fill="currentColor"/></svg>',
+    'theme-light': '<svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><circle cx="8" cy="8" r="3" fill="currentColor"/><path d="M8 1v2M8 13v2M1 8h2M13 8h2M3 3l1.4 1.4M11.6 11.6 13 13M13 3l-1.4 1.4M4.4 11.6 3 13" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>',
+    'theme-dark': '<svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path d="M13 9.6A5.6 5.6 0 0 1 6.4 3 5.6 5.6 0 1 0 13 9.6z" fill="currentColor"/></svg>',
     refresh: '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" class="wp-spin"><path d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9M13.5 2.5v3h-3" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>',
   };
 
@@ -158,14 +200,26 @@
     return ' <span class="wp-wd ' + (r > 0 ? 'good' : 'bad') + '" title="Change in your chance to win the week if you make this move">' + sgnN(r) + '% win chance</span>';
   }
 
-  function winHTML() {
+  // Win chance as a half dial between the two scores: the blue arc is your share of simulated finishes.
+  function gaugeHTML() {
     const w = S.wp;
-    if (!w || !w.opp || !isNum(w.pWin)) return '';
+    if (!w || !w.opp || !isNum(w.pWin)) return '<div class="wp-mid wp-mid--sep" aria-hidden="true">–</div>';
     const pct = clamp(Math.round(w.pWin * 100), 1, 99);
-    return '<div class="wp-win" title="Your chance to finish ahead, from simulating the rest of the week. A tie counts as half.">' +
-      '<p class="wp-win-t">You win <b>' + pct + '%</b></p>' +
-      '<div class="wp-meter" role="img" aria-label="' + esc('You win ' + pct + '% of simulated finishes') + '"><i style="width:' + pct + '%"></i></div>' +
-      '</div>';
+    const len = Math.PI * 54;
+    let after = '';
+    if (S.plan && S.plan.moves.length) {
+      let d = null;
+      try { d = window.WPInsights.winDelta(w, S.plan.gain); } catch (e) { d = null; }
+      const p2 = isNum(d) ? clamp(Math.round((w.pWin + d) * 100), 1, 99) : null;
+      if (p2 != null && p2 !== pct) after = '<p class="wp-gauge-p">' + p2 + '% with your plan</p>';
+    }
+    return '<div class="wp-mid wp-gauge" title="Your chance to finish ahead, from simulating the rest of the week 5,000 times. A tie counts as half.">' +
+      '<svg viewBox="0 0 128 70" aria-hidden="true" focusable="false">' +
+      '<path class="g-track" d="M10 64A54 54 0 0 1 118 64"/>' +
+      '<path class="g-fill" d="M10 64A54 54 0 0 1 118 64" style="--len:' + len.toFixed(1) + ';--off:' + (len * (1 - pct / 100)).toFixed(1) + '"/>' +
+      '<path class="g-tick" d="M64 17v5"/></svg>' +
+      '<p class="wp-gauge-n" role="img" aria-label="' + esc('You win ' + pct + '% of simulated finishes') + '"><b>' + pct + '</b><i>%</i></p>' +
+      '<p class="wp-gauge-l">win chance</p>' + after + '</div>';
   }
 
   /* ------------------------------------------------------------- setup screen */
@@ -297,6 +351,7 @@
       (S.mode === 'demo' ? '<span class="wp-tag wp-tag--demo" title="Fake ESPN data, nothing is read from your league">Demo data</span>' : '') +
       (onWeek ? leaguePickHTML(b) : '') +
       (synced ? '<span class="wp-synced">' + synced + '</span>' : '') +
+      '<button type="button" class="wp-iconbtn wp-iconbtn--quiet" data-act="theme" data-focus="theme" title="' + esc('Theme: ' + THEME_LABEL[S.theme]) + '" aria-label="' + esc('Colour theme: ' + THEME_LABEL[S.theme] + '. Change') + '">' + ICON['theme-' + S.theme] + '</button>' +
       '<button type="button" class="wp-btn wp-btn--quiet' + (busy ? ' is-loading' : '') + '" data-act="refresh" data-focus="refresh"' + (busy ? ' aria-busy="true"' : '') + '>' + ICON.refresh + '<span>Refresh</span></button>' +
       '</div>' +
       (note ? '<p class="wp-weeknote">' + esc(note) + '</p>' : '') +
@@ -334,30 +389,81 @@
       '<p class="wp-bar-key">Solid is scored, light is still projected.</p>';
   }
 
+  function sideHTML(t, who) {
+    const teams = (S.base.league && S.base.league.teams) || {};
+    const rec = teams[t.teamId] && teams[t.teamId].record;
+    const played = rec && (rec.wins || rec.losses || rec.ties);
+    return '<div class="wp-side wp-side--' + who + '">' +
+      '<h2 class="wp-team"><span class="wp-team-n">' + esc(t.name) + '</span>' + (played ? '<span class="wp-rec" title="Season record">' + esc(recText(rec)) + '</span>' : '') + '</h2>' +
+      '<p class="wp-pts">' + f1(t.actual) + '</p>' +
+      '<p class="wp-proj">Projected <b>' + f1(t.projFinal) + '</b></p>' +
+      '</div>';
+  }
+
   function heroHTML(vm) {
     const me = vm.me, opp = vm.opp;
     const v = verdictText(vm);
     return '' +
       '<section class="wp-hero" aria-label="Scoreboard">' +
       '<div class="wp-score">' +
-      '<div class="wp-side wp-side--you">' +
-      '<h2 class="wp-team">' + esc(me.name) + '</h2>' +
-      '<p class="wp-pts">' + f1(me.actual) + '</p>' +
-      '<p class="wp-proj">Projected <b>' + f1(me.projFinal) + '</b></p>' +
-      '</div>' +
-      '<div class="wp-sep" aria-hidden="true">–</div>' +
-      (opp
-        ? '<div class="wp-side wp-side--opp">' +
-          '<h2 class="wp-team">' + esc(opp.name) + '</h2>' +
-          '<p class="wp-pts">' + f1(opp.actual) + '</p>' +
-          '<p class="wp-proj">Projected <b>' + f1(opp.projFinal) + '</b></p>' +
-          '</div>'
-        : '<div class="wp-side wp-side--opp"><h2 class="wp-team">Bye week</h2><p class="wp-pts wp-pts--none">–</p></div>') +
+      sideHTML(me, 'you') +
+      gaugeHTML() +
+      (opp ? sideHTML(opp, 'opp') : '<div class="wp-side wp-side--opp"><h2 class="wp-team"><span class="wp-team-n">Bye week</span></h2><p class="wp-pts wp-pts--none">–</p></div>') +
       '</div>' +
       (opp ? heroBar(me, opp) : '') +
       (v.text ? '<p class="wp-verdict ' + v.cls + '">' + esc(v.text) + '</p>' : '') +
-      winHTML() +
       '</section>';
+  }
+
+  /* --------------------------------------------------------------- week plan */
+
+  function dropText(rec) {
+    if (rec.drop) return 'Drop <b>' + esc(rec.drop.last || rec.drop.name) + '</b> <span class="wp-dim">' + f1(rec.dropProj && rec.dropProj.fp) + ' a game</span>' + (rec.activate ? ' to make room · uses no add' : '');
+    if (rec.irMove) return 'Move <b>' + esc(rec.irMove.last || rec.irMove.name) + '</b> to IR, no drop';
+    return 'Open roster spot, no drop';
+  }
+
+  // The three numbers every move is judged by: this week, the weeks after it, and their sum.
+  function numsHTML(rec) {
+    const wk = rec.ltWeeks || 3;
+    const cls = (v, min) => (v > min ? 'good' : v < -0.049 ? 'bad' : '');
+    const cell = (k, v, c, tip) => '<div title="' + esc(tip) + '"><dt>' + esc(k) + '</dt><dd' + (c ? ' class="' + c + '"' : '') + '>' + sgn1(v) + '</dd></div>';
+    return '<dl class="wp-nums">' +
+      cell('This week', rec.gain, cls(rec.gain, 0.049), 'Points your lineup gains this week') +
+      (isNum(rec.longTerm) ? cell('Next ' + wk + ' wks', rec.longTerm, cls(rec.longTerm, 0.049), 'The pickup against the player dropped, over their real games and opponents in the next ' + wk + ' weeks, allowing for missed games') : '') +
+      (isNum(rec.net) ? cell('Total', rec.net, cls(rec.net, 0.5), 'This week plus the next ' + wk + ' weeks') : '') +
+      '</dl>';
+  }
+
+  function planHTML(vm) {
+    const plan = S.plan;
+    if (!plan || !vm.days.some((d) => d.kind !== 'past')) return '';
+    const wk = (vm.recs && vm.recs.ltWeeks) || 3;
+    const head = (text) => '<div class="wp-sec-h"><h2 id="h-plan">Your plan</h2><p>' + text + '</p></div>';
+    if (!plan.moves.length) {
+      const note = vm.recs && vm.recs.note;
+      return '<section class="wp-sec wp-plan" aria-labelledby="h-plan">' + head('The moves worth making this week, each under the day it takes effect.') +
+        '<p class="wp-plan-none"><b>Hold.</b> ' + esc(note || 'No pickup this week is worth more than the player it would cost you once the next ' + wk + ' weeks count.') + '</p></section>';
+    }
+    const steps = plan.moves.map((m) => {
+      const d = vm.days.find((x) => x.sp === m.sp) || {};
+      const fa = m.fa;
+      return '<li class="wp-step' + (d.kind === 'today' ? ' is-today' : '') + '">' +
+        '<p class="wp-step-d"><b>' + esc(d.kind === 'today' ? 'Today' : d.dow || '') + '</b><span>' + esc(d.kind === 'today' ? d.dow + ' ' + d.dom : d.dom || '') + (m.waiver ? ' · joins' : '') + '</span></p>' +
+        '<div class="wp-step-b">' +
+        '<div class="wp-add-n">' + faceHTML(fa) + '<p><span class="wp-step-k">' + (m.activate ? 'Activate from IR' : m.waiver ? 'Claim' : 'Add') + '</span> <strong>' + esc(fa.name) + '</strong>' + injHTML(fa) + (m.waiver ? ' ' + waiverChip(fa) : '') +
+        '<span class="wp-meta">' + recMeta(m) + ' · ' + f1(m.faProj && m.faProj.fp) + ' a game</span></p></div>' +
+        '<p class="wp-add-d">' + dropText(m) + '</p>' +
+        claimNoteHTML(m, vm) +
+        '</div>' + numsHTML(m) + '</li>';
+    }).join('');
+    const proj = plan.vm && plan.vm.me ? plan.vm.me.projFinal : null;
+    const total = '<div class="wp-plan-sum"><p class="wp-plan-k">' + plural(plan.moves.length, 'move') + ' together</p>' +
+      numsHTML({ gain: plan.gain, longTerm: plan.longTerm, net: plan.net, ltWeeks: wk }) +
+      (isNum(proj) ? '<p class="wp-plan-p">Projected finish <span>' + f1(vm.me.projFinal) + '</span> to <b>' + f1(proj) + '</b>' + winTag(plan.gain) + '</p>' : '') + '</div>';
+    return '<section class="wp-sec wp-plan" aria-labelledby="h-plan">' +
+      head('The moves worth making this week. Each is listed under the day it takes effect, and a waiver claim has to be entered before that. Each one counts on the ones before it, so no player is dropped twice. The plan is remade every time the data refreshes.') +
+      '<div class="wp-plan-in"><ol class="wp-steps">' + steps + '</ol>' + total + '</div></section>';
   }
 
   /* -------------------------------------------------------------- games edge */
@@ -469,53 +575,63 @@
     return '<span class="wp-tag wp-tag--go" title="' + esc('On waivers' + (isNum(fa.waiverDate) ? ', clears ' + new Date(fa.waiverDate).toDateString() : '')) + '">Waivers</span>' + (t ? '' : '');
   }
 
+  // A waiver claim is entered before waivers clear and processes when they do. The day a move is
+  // listed under is the day it takes effect, so a claim says in words when it has to be in.
+  function claimNoteHTML(rec, vm) {
+    if (!rec.waiver) return '';
+    const at = localDayTime(rec.fa.waiverDate);
+    const by = at ? at + (tzShort ? ' ' + tzShort : '') : dayLabel(vm, rec.sp) + ' morning';
+    const soon = isNum(rec.fa.waiverDate) && rec.fa.waiverDate - vm.now < 24 * 3600 * 1000;
+    return '<p class="wp-add-why wp-claim"><b>' + (soon ? 'Enter this claim now, before ' : 'Enter this claim before ') + esc(by) + '.</b> ESPN processes it then, and that is when ' +
+      esc(rec.fa.name) + ' joins your roster' + (rec.drop ? ' and ' + esc(rec.drop.name) + ' leaves' : '') + '.</p>'; // full names: two Joneses can be in one move
+  }
+
   function recBodyHTML(rec, vm) {
     const fa = rec.fa;
     const left = Math.max(faGamesLeft(fa, rec.sp, vm), rec.gamesReach || 0);
-    const pct = fa.own && isNum(fa.own.pct) ? Math.round(fa.own.pct) + '% rostered' : '';
+    const pct = !rec.activate && fa.own && isNum(fa.own.pct) ? Math.round(fa.own.pct) + '% rostered' : '';
     const facts = [
       'Starts ' + (rec.gamesReach || 0) + ' of ' + left + (left === 1 ? ' game' : ' games'),
       f1(rec.faProj && rec.faProj.fp) + ' FP a game',
       pct,
     ].filter(Boolean).join(' · ');
-    const drop = rec.drop
-      ? 'Drop <b>' + esc(rec.drop.last || rec.drop.name) + '</b> <span class="wp-dim">(' + f1(rec.dropProj && rec.dropProj.fp) + ')</span>'
-      : 'Open roster spot';
+    const win = winTag(rec.gain);
     return '' +
-      '<p class="wp-add-n"><strong>' + esc(fa.name) + '</strong> <span class="wp-meta">' + recMeta(rec) + '</span>' + (rec.waiver ? ' ' + waiverChip(fa) : '') + '</p>' +
+      '<div class="wp-add-n">' + faceHTML(fa) + '<p>' + (rec.activate ? '<span class="wp-step-k">Activate from IR</span> ' : '') + '<strong>' + esc(fa.name) + '</strong>' + injHTML(fa) + (rec.waiver ? ' ' + waiverChip(fa) : '') + '<span class="wp-meta">' + recMeta(rec) + '</span></p></div>' +
       '<p class="wp-add-f">' + esc(facts) + '</p>' +
-      (rec.waiver ? '<p class="wp-add-why">Put in the claim before waivers clear on ' + esc(dayLabel(vm, rec.sp)) + ' morning.</p>' : '') +
-      '<p class="wp-add-d">' + drop + ' <span class="wp-gain ' + (rec.gain > 0 ? 'good' : '') + '">' + sgn1(rec.gain) + ' FP this week</span>' +
-      (rec.upgrade ? '' : ' <span class="wp-dim" title="Per game he is projected below the player he replaces. The gain comes from extra games in your lineup.">not an upgrade</span>') +
-      winTag(rec.gain) +
-      '</p>' + longTermHTML(rec);
+      '<p class="wp-add-d">' + dropText(rec) +
+      (rec.upgrade ? '' : ' <span class="wp-dim" title="Per game the pickup is projected below the player replaced. The gain comes from extra games in your lineup.">· not an upgrade</span>') + '</p>' +
+      claimNoteHTML(rec, vm) +
+      numsHTML(rec) + (win ? '<p class="wp-add-w">' + win + '</p>' : '');
   }
 
-  // Next weeks: what the move gains or costs after this week, and the total that ranks the moves.
-  function longTermHTML(rec) {
-    if (!isNum(rec.longTerm)) return '';
-    const wk = rec.ltWeeks || 3;
-    const who = rec.drop ? 'keeping ' + (rec.drop.last || rec.drop.name) : 'an empty spot';
-    return '<p class="wp-add-lt" title="Expected points over each player’s real games and opponents in the next ' + wk + ' weeks">Next ' + wk + ' weeks <span class="' + (rec.longTerm > 0.049 ? 'good' : rec.longTerm < -0.049 ? 'bad' : '') + '">' + sgn1(rec.longTerm) + ' FP</span> vs ' + esc(who) +
-      ' · total <b class="' + (rec.net > 0.5 ? 'good' : 'bad') + '">' + sgn1(rec.net) + '</b></p>';
+  // A night already played: one compact tile with both scores.
+  function pastNightHTML(vm, d) {
+    const me = vm.me, opp = vm.opp, n = S.base.league.starters || 10;
+    const a = me.days[d.sp] || {}, b = opp ? opp.days[d.sp] || {} : null;
+    const diff = b ? (a.playedPts || 0) - (b.playedPts || 0) : null;
+    return '<li class="wp-pnight' + (diff == null ? '' : diff > 0 ? ' is-won' : diff < 0 ? ' is-lost' : '') + '">' +
+      '<p class="wp-pnight-d"><span>' + esc(d.dow) + '</span> <b>' + esc(d.dom) + '</b></p>' +
+      pipsHTML(a, 'past', n, 'you', { cls: 'wp-pips--sm' }) +
+      '<p class="wp-pnight-s"><b>' + f1(a.playedPts) + '</b>' + (b ? '<i>v</i><span>' + f1(b.playedPts) + '</span>' : '') + '</p>' +
+      '<p class="wp-pnight-g">' + (a.played || 0) + (b ? ' v ' + (b.played || 0) : '') + ' starters' + (diff ? ' · <span class="' + (diff > 0 ? 'good' : 'bad') + '">' + sgn1(diff) + '</span>' : '') + '</p></li>';
   }
 
+  // Tonight or a night to come. The pickup shown is the plan's move for that night; other nights show
+  // what is left once the whole plan is made, which is a hold by construction.
   function nightHTML(vm, d) {
     const L = S.base.league, me = vm.me, opp = vm.opp;
     const n = L.starters || 10;
     const a = me.days[d.sp] || {};
     const b = opp ? opp.days[d.sp] || {} : null;
-    const past = d.kind === 'past', today = d.kind === 'today';
+    const today = d.kind === 'today';
     const rosterN = me.rows.filter((r) => !r.gone && r.player && r.player.slot !== 13 && !(r.player.claimFrom > d.sp) && !(r.leaves <= d.sp)).length; // pending claims applied
     const open = isNum(a.open) ? a.open : Math.max(0, n - gamesOf(a));
     const tip = tipOf(d.firstTip);
     const marker = d.heavy ? '<span class="wp-tag wp-tag--heavy" title="11 or more NBA games">Heavy night</span>' : d.light ? '<span class="wp-tag" title="5 or fewer NBA games">Light night</span>' : '';
 
     let summary;
-    if (past) {
-      summary = '<p class="wp-nsum"><b>Played ' + (a.played || 0) + '</b> · ' + f1(a.playedPts) + ' pts</p>' +
-        (b ? '<p class="wp-nopp">' + esc(opp.name) + ' ' + (b.played || 0) + ' · ' + f1(b.playedPts) + '</p>' : '');
-    } else if (today) {
+    if (today) {
       summary = '<p class="wp-nsum"><b>' + (a.played || 0) + ' played</b> · ' + (a.remaining || 0) + ' to come' +
         (open > 0 ? ' · <span class="wp-openn">' + open + ' open</span>' : '') + '</p>' +
         (b ? '<p class="wp-nopp">' + esc(opp.name) + ' ' + (b.played || 0) + ' played · ' + (b.remaining || 0) + ' to come</p>' : '');
@@ -525,45 +641,44 @@
         (b ? '<p class="wp-nopp">' + esc(opp.name) + ' ' + gamesOf(b) + ' starters</p>' : '');
     }
 
-    let addBlock = '';
-    if (!past) {
-      const recs = (vm.recs && vm.recs.byDay && vm.recs.byDay[d.sp]) || [];
-      const adds = vm.adds || {};
-      const dayBlocked = today && adds.perDay && adds.limit > 0 && adds.todayUsed >= adds.limit;
-      const claimNames = vm.recs && vm.recs.claimDays && vm.recs.claimDays[d.sp];
-      if (claimNames && claimNames.length) {
-        addBlock = '<div class="wp-add is-claim"><p class="wp-add-k">Claim day</p><p class="wp-add-why">Your claim for <b>' +
-          claimNames.map((x) => esc(x.name)).join(', ') + '</b> processes today and uses this day’s add. He is in your lineup from tonight.</p></div>';
-      } else if (recs.length) {
-        const alts = recs.slice(1);
-        const top = recs[0];
-        const label = top.spend ? 'Spend your add here' : top.worth === false ? 'Hold' : 'Best add';
-        const why = top.worth === false
-          ? '<p class="wp-add-why">The best pickup helps this week but costs more over the next ' + (top.ltWeeks || 3) + ' weeks. Only for this week:</p>'
-          : '';
-        addBlock = '<div class="wp-add' + (dayBlocked ? ' is-blocked' : '') + (top.spend ? ' is-spend' : '') + (top.worth === false ? ' is-hold' : '') + '"><p class="wp-add-k">' + label + '</p>' + why + recBodyHTML(top, vm) + '</div>';
-        if (alts.length) {
-          addBlock += '<details class="wp-alts"><summary>If not him, ' + alts.length + ' more ' + (alts.length === 1 ? 'option' : 'options') + '</summary><ul>' +
-            alts.map((r) => '<li>' + recBodyHTML(r, vm) + '</li>').join('') + '</ul></details>';
-        }
-      } else if (open > 0 || a.withGame) {
+    const claimNames = vm.recs && vm.recs.claimDays && vm.recs.claimDays[d.sp];
+    const plan = S.plan;
+    const moves = plan ? plan.moves.filter((m) => m.sp === d.sp) : []; // more than one only where adds have no daily limit
+    const more = (list, label) => (list && list.length
+      ? '<details class="wp-alts"><summary>' + label + '</summary><ul>' + list.map((r) => '<li>' + recBodyHTML(r, vm) + '</li>').join('') + '</ul></details>' : '');
+    // A claim already entered processes that morning; it does not stop other moves that night.
+    let addBlock = claimNames && claimNames.length
+      ? '<div class="wp-add is-claim"><p class="wp-add-k">Claim day</p><p class="wp-add-why">Your claim for <b>' +
+        claimNames.map((x) => esc(x.name)).join(', ') + '</b> processes ' + (today ? 'this' : 'that') + ' morning. If it goes through, the pickup is in your lineup from that night.</p></div>'
+      : '';
+    if (moves.length) {
+      addBlock += moves.map((move) => '<div class="wp-add is-spend"><p class="wp-add-k">In your plan' +
+        (plan.moves.length > 1 ? ' · move ' + (plan.moves.indexOf(move) + 1) + ' of ' + plan.moves.length : '') + '</p>' + recBodyHTML(move, vm) + '</div>' +
+        more(move.alts, 'Instead: ' + plural((move.alts || []).length, 'other option'))).join('');
+    } else {
+      const src = (plan && plan.vm) || vm;
+      const recs = (src.recs && src.recs.byDay && src.recs.byDay[d.sp]) || [];
+      const top = recs[0];
+      if (top && top.worth === false) {
+        addBlock += '<div class="wp-add is-hold"><p class="wp-add-k">Hold</p>' +
+          '<p class="wp-add-why">Nothing tonight is worth it once the next ' + (top.ltWeeks || 3) + ' weeks count.</p></div>' +
+          more(recs, 'For this week only: ' + esc(top.fa.last || top.fa.name) + ' ' + sgn1(top.gain));
+      } else if (top) {
+        addBlock += '<div class="wp-add"><p class="wp-add-k">Best add</p>' + recBodyHTML(top, vm) + '</div>' +
+          more(recs.slice(1), 'Instead: ' + plural(recs.length - 1, 'other option'));
+      } else if (!addBlock && (open > 0 || a.withGame)) {
         addBlock = '<p class="wp-add-none">No free agent beats your lineup on this night.</p>';
-      }
-      if (today && adds.perDay && adds.limit > 0) {
-        addBlock += '<p class="wp-lim' + (dayBlocked ? ' is-used' : '') + '">' + (dayBlocked
-          ? 'Today’s add is used. Streaming starts tomorrow.'
-          : adds.todayUsed + ' of ' + plural(adds.limit, 'add') + ' used today.') + '</p>';
       }
     }
 
-    return '<li class="wp-night is-' + d.kind + (open > 0 && !past ? ' has-open' : '') + '">' +
+    return '<li class="wp-night is-' + d.kind + (open > 0 ? ' has-open' : '') + (moves.length ? ' has-move' : '') + '">' +
       '<div class="wp-nhead">' +
       '<h3 class="wp-nday"><span>' + esc(today ? 'Today' : d.dow) + '</span> <b>' + (today ? esc(d.dow) + ' ' : '') + esc(d.dom) + '</b></h3>' +
       '<p class="wp-ngames">' + plural(d.nGames || 0, 'NBA game') + marker + '</p>' +
       '</div>' +
       pipsHTML(a, d.kind, n, 'you', { cls: 'wp-pips--lg' }) +
       summary +
-      (tip && !past ? '<p class="wp-ntip">First tip ' + esc(tip.time) + (tip.next ? ' <abbr title="Next calendar day in your time zone">+1</abbr>' : '') + '</p>' : '') +
+      (tip ? '<p class="wp-ntip">First tip ' + esc(tip.time) + (tip.next ? ' <abbr title="Next calendar day in your time zone">+1</abbr>' : '') + '</p>' : '') +
       addBlock +
       '</li>';
   }
@@ -573,7 +688,9 @@
     const used = a.used || 0;
     let main, pips = '';
     if (isNum(a.weekLimit)) {
-      main = used + ' of ' + a.weekLimit + ' adds used this week · ' + Math.max(0, a.weekLimit - used) + ' left';
+      const free = isNum(a.left) ? a.left : Math.max(0, a.weekLimit - used);
+      const held = Math.max(0, a.weekLimit - used - free);
+      main = used + ' of ' + a.weekLimit + ' adds used this week · ' + free + ' left' + (held ? ' after your pending ' + (held === 1 ? 'claim' : 'claims') : '');
       if (a.weekLimit <= 14) {
         for (let i = 0; i < a.weekLimit; i++) pips += '<i class="wp-pip ' + (i < used ? 'p-used' : 'p-open') + '"></i>';
         pips = '<span class="wp-pips wp-pips--sm" role="img" aria-label="' + esc(used + ' of ' + a.weekLimit + ' adds used') + '">' + pips + '</span>';
@@ -581,7 +698,7 @@
     } else {
       main = plural(used, 'add') + ' used this week';
     }
-    const rule = a.limit === -1 ? 'no add limit' : a.perDay && a.limit > 0 ? 'limit ' + a.limit + ' per day' : a.limit > 0 ? 'limit ' + a.limit + ' per week' : '';
+    const rule = a.limit === -1 ? 'no add limit' : isNum(a.weekLimit) ? 'any day' : '';
     const pending = (a.pending || []).map((p) =>
       '<li>Add <b>' + esc(p.add && p.add.name) + '</b>' + (p.drop ? ', drop <b>' + esc(p.drop.name) + '</b>' : '') +
       (p.sp != null && S.vm ? ' <span class="wp-dim">· processes ' + esc(dayLabel(S.vm, p.sp) || 'later') + '</span>' : '') + '</li>').join('');
@@ -591,13 +708,15 @@
 
   function nightsHTML(vm) {
     const note = vm.recs && vm.recs.note;
+    const past = vm.days.filter((d) => d.kind === 'past'), rest = vm.days.filter((d) => d.kind !== 'past');
     return '' +
       '<section class="wp-sec wp-nights" aria-labelledby="h-nights">' +
       '<div class="wp-sec-h wp-sec-h--split"><div><h2 id="h-nights">Nights</h2>' +
       '<p>Orange rings are open lineup slots, the nights where an add pays off. Days follow ESPN’s US Eastern dates; tip times are in your time zone' + (tzShort ? ' (' + esc(tzShort) + ')' : '') + '.</p></div>' +
       addsLine(vm) + '</div>' +
       (note ? '<p class="wp-note">' + esc(note) + '</p>' : '') +
-      '<ol class="wp-ngrid">' + vm.days.map((d) => nightHTML(vm, d)).join('') + '</ol>' +
+      (past.length ? '<ol class="wp-pastrow" aria-label="Nights already played">' + past.map((d) => pastNightHTML(vm, d)).join('') + '</ol>' : '') +
+      (rest.length ? '<ol class="wp-ngrid">' + rest.map((d) => nightHTML(vm, d)).join('') + '</ol>' : '') +
       '</section>';
   }
 
@@ -631,8 +750,9 @@
       } else {
         main = f1(c.fp);
         cls = c.start ? ' is-start' : ' is-squeezed';
-        title = [dayName, c.home ? 'vs ' + c.opp : '@ ' + c.opp, 'Projected ' + main + ' FP', c.start ? 'starts' : 'squeezed out, your lineup is full', c.dtd ? 'day to day' : '', c.b2b ? 'second night of a back-to-back, more likely to rest' : '', tipTxt].filter(Boolean).join(' · ');
-        if (c.dtd) side = '<sup class="wp-q" title="Day to day">Q</sup>';
+        title = [dayName, c.home ? 'vs ' + c.opp : '@ ' + c.opp, 'Projected ' + main + ' FP', c.start ? 'starts' : 'squeezed out, your lineup is full', c.back ? 'expected back from injury, counted at 75%' : '', c.dtd ? 'day to day' : '', c.b2b ? 'second night of a back-to-back, more likely to rest' : '', tipTxt].filter(Boolean).join(' · ');
+        if (c.back) side = '<sup class="wp-q" title="Expected back from injury by then, counted at 75%">RTN</sup>';
+        else if (c.dtd) side = '<sup class="wp-q" title="Day to day">Q</sup>';
         else if (c.b2b) side = '<sup class="wp-b2b" title="Second night of a back-to-back">B2B</sup>';
       }
     }
@@ -641,14 +761,13 @@
 
   function rowPlayerHTML(r, key, open) {
     const p = r.player || {};
-    const inj = injuryTag(p.injury);
     const slot = r.gone ? '' : slotLabel(p.slot);
     const meta = [proAbbrev(p.proTeamId), p.pos].filter(Boolean).join(' · ');
     return '<th scope="row" class="wp-stick wp-pcell">' +
       '<button type="button" class="wp-pbtn" data-key="' + esc(key) + '" aria-expanded="' + (open ? 'true' : 'false') + '">' +
       '<span class="wp-slot" aria-hidden="true">' + esc(slot) + '</span>' +
       faceHTML(p) +
-      '<span class="wp-pname"><span class="wp-pn">' + esc(p.name) + (inj ? ' <span class="wp-inj is-' + inj.cls + '" title="' + esc(inj.tip) + '">' + inj.t + '</span>' : '') +
+      '<span class="wp-pname"><span class="wp-pn">' + esc(p.name) + injHTML(p) +
       (p.claimFrom != null && S.vm ? ' <span class="wp-tag wp-tag--go" title="Pending waiver claim">Claim · from ' + esc(dayLabel(S.vm, p.claimFrom)) + '</span>' : '') +
       (r.leaves != null && S.vm ? ' <span class="wp-tag" title="Dropped by your pending claim">Leaves ' + esc(dayLabel(S.vm, r.leaves)) + '</span>' : '') + '</span>' +
       '<span class="wp-pm">' + esc(meta) + (slot ? '<span class="wp-pm-slot"> · ' + esc(slot) + '</span>' : '') + '</span></span>' +
@@ -694,9 +813,10 @@
     const stat = (k, v, sub) => '<div class="wp-stat"><dt>' + esc(k) + '</dt><dd>' + v + (sub ? '<small>' + esc(sub) + '</small>' : '') + '</dd></div>';
     const stats = '<dl class="wp-stats">' +
       stat('Season', f1(pr.curAvg), isNum(pr.n) && pr.n ? pr.n + ' GP' : '') +
-      stat('Last 15', f1(pr.l15), isNum(pr.l15n) && pr.l15n ? pr.l15n + ' GP' : '') +
+      stat('Last 15 days', f1(pr.l15), isNum(pr.l15n) && pr.l15n ? pr.l15n + ' GP' : '') +
       stat('ESPN projection', f1(pr.espnProj)) +
-      stat('Our projection', f1(pr.fp)) +
+      stat('Our projection', f1(pr.fp), isNum(pr.minTrend) && Math.abs(pr.minTrend) >= 0.005 ? (pr.minTrend > 0 ? '+' : MINUS) + Math.round(Math.abs(pr.minTrend) * 100) + '% for minutes' : '') +
+      (isNum(pr.mpg) ? stat('Minutes', f1(pr.mpg), isNum(pr.mpgL15) ? f1(pr.mpgL15) + ' lately' : '') : '') +
       stat('Rostered', isNum(own.pct) ? Math.round(own.pct) + '%' : '–', isNum(own.chg) && Math.abs(own.chg) >= 0.05 ? sgn1(own.chg) : '') +
       '</dl>';
 
@@ -720,8 +840,10 @@
         '</li>';
     }).join('');
 
+    const inj = injuryTag(p);
+    const news = p.news && p.news.note ? '<p class="wp-news">' + (inj ? '<span class="wp-inj is-' + inj.cls + '">' + esc(inj.t) + '</span> ' : '') + esc(p.news.note) + '</p>' : '';
     return '<div class="wp-detail-in">' +
-      '<p class="wp-pace">' + headline + '</p>' +
+      '<p class="wp-pace">' + headline + '</p>' + news +
       '<div class="wp-detail-grid">' + stats + form + '</div>' +
       (games ? '<ul class="wp-games">' + games + '</ul>' : '<p class="wp-dim wp-nogames">No games played yet this week.</p>') +
       '</div>';
@@ -805,11 +927,11 @@
       const best = r.bestSp != null ? dayLabel(vm, r.bestSp) : '';
       const abbr = proAbbrev(fa.proTeamId);
       return '<li class="wp-brow">' +
-        '<div class="bc-p">' + faceHTML(fa) + '<span class="wp-pname"><span class="wp-pn">' + esc(fa.name) + (fa.status === 'WAIVERS' ? ' ' + waiverChip(fa) : '') + '</span><span class="wp-pm">' + esc([abbr, fa.pos].filter(Boolean).join(' · ')) + '</span></span></div>' +
+        '<div class="bc-p">' + faceHTML(fa) + '<span class="wp-pname"><span class="wp-pn">' + esc(fa.name) + injHTML(fa) + (fa.status === 'WAIVERS' ? ' ' + waiverChip(fa) : '') + '</span><span class="wp-pm">' + esc([abbr, fa.pos].filter(Boolean).join(' · ')) + '</span></span></div>' +
         '<div class="bc-o"><span>' + (isNum(own.pct) ? Math.round(own.pct) + '%' : '–') + '</span>' + chg + '</div>' +
         '<div class="bc-f">' + f1(r.faProj && r.faProj.fp) + '</div>' +
         '<div class="bc-d" role="img" aria-label="' + esc(plural(r.gamesLeft || 0, 'game') + ' left') + '"><span class="wp-kps">' + pips + '</span><span class="bc-dn">' + (r.gamesLeft || 0) + ' left</span></div>' +
-        '<div class="bc-x">' + (r.drop ? 'Drop <b>' + esc(r.drop.last || r.drop.name) + '</b>' : '<span class="wp-dim">Open spot</span>') + '</div>' +
+        '<div class="bc-x">' + (r.drop ? 'Drop <b>' + esc(r.drop.last || r.drop.name) + '</b>' : r.irMove ? '<b>' + esc(r.irMove.last || r.irMove.name) + '</b> to IR' : '<span class="wp-dim">Open spot</span>') + '</div>' +
         '<div class="bc-g"><b class="' + (isNum(r.net) ? (r.net > 0.5 ? 'good' : 'bad') : (r.gain > 0 ? 'good' : '')) + '">' + sgn1(isNum(r.net) ? r.net : r.gain) + '</b><small>' + sgn1(r.gain) + ' this week' + (isNum(r.longTerm) ? ' · ' + sgn1(r.longTerm) + ' later' : '') + (best ? ' · from ' + esc(best) : '') + '</small>' + winTag(r.gain) + '</div>' +
         '</li>';
     }).join('');
@@ -831,7 +953,8 @@
   }
 
   function footHTML() {
-    return '<footer class="wp-colophon"><p>Projected points blend ESPN’s season projection with this season’s average, weighted by games played. ' +
+    return '<footer class="wp-colophon"><p>Projected points start from ESPN’s season projection and this season’s games, with recent games and a change in minutes counting more. ' +
+      'Each game is adjusted for venue, opponent and back-to-backs. Later weeks allow for missed games, and injured players count from ESPN’s expected return date. ' +
       'Lineups are optimised against real position eligibility. Data comes from ESPN and refreshes every few minutes.</p></footer>';
   }
 
@@ -893,10 +1016,9 @@
   }
 
   function playerCellHTML(p, extra) {
-    const inj = injuryTag(p.injury);
     const meta = [proAbbrev(p.proTeamId), p.pos, extra].filter(Boolean).join(' · ');
     return '<span class="wp-pc">' + faceHTML(p) + '<span class="wp-pname"><span class="wp-pn">' + esc(p.name) +
-      (inj ? ' <span class="wp-inj is-' + inj.cls + '" title="' + esc(inj.tip) + '">' + inj.t + '</span>' : '') + '</span>' +
+      injHTML(p) + '</span>' +
       '<span class="wp-pm">' + esc(meta) + '</span></span></span>';
   }
 
@@ -1029,16 +1151,16 @@
     const buy = bl.buyLow || [], sell = bl.sellHigh || [];
     return '<div class="wp-view">' +
       '<section class="wp-sec" aria-labelledby="h-tmine">' +
-      secHead('h-tmine', 'Your roster', 'Points per game this season, over the last 7 and 15 games, and against ESPN’s projection. Change is the last 15 minus the projection (the season average when there is none).') +
+      secHead('h-tmine', 'Your roster', 'Points per game this season, over the last 7 and 15 days, and against ESPN’s projection. Change is the last 15 days minus the projection (the season average when there is none).') +
       (mine.length ? trendTableHTML(mine, 'Your roster, recent form') : '<div class="wp-empty"><p>No roster to show yet. Refresh to load it.</p></div>') +
       '</section>' +
       '<div class="wp-pair">' +
       '<section class="wp-sec" aria-labelledby="h-buy">' +
-      secHead('h-buy', 'Buy low', 'Players on other teams who usually score 25 or more a game but have slumped over the last 15. Worth a trade offer.') +
+      secHead('h-buy', 'Buy low', 'Players on other teams who usually score 25 or more a game but have slumped over the last 15 days. Worth a trade offer.') +
       (buy.length ? '<ul class="wp-tlist">' + buy.map((r) => trendItemHTML(r, 'buy')).join('') + '</ul>' : '<div class="wp-empty"><p>Nobody on another team is in a deep enough slump right now. Check again after more games.</p></div>') +
       '</section>' +
       '<section class="wp-sec" aria-labelledby="h-sell">' +
-      secHead('h-sell', 'Sell high', 'Your players running well above their usual level over the last 15. Their price may not hold.') +
+      secHead('h-sell', 'Sell high', 'Your players running well above their usual level over the last 15 days. Their price may not hold.') +
       (sell.length ? '<ul class="wp-tlist">' + sell.map((r) => trendItemHTML(r, 'sell')).join('') + '</ul>' : '<div class="wp-empty"><p>None of your players is running unusually hot. Nothing to sell yet.</p></div>') +
       '</section></div></div>';
   }
@@ -1048,11 +1170,10 @@
   const countText = (n) => (n ? '· ' + n + ' picked' : '');
 
   function pickItemHTML(p, side, checked) {
-    const inj = injuryTag(p.injury);
     const meta = [proAbbrev(p.proTeamId), p.pos].filter(Boolean).join(' · ');
     const id = esc(p.id);
     return '<li><label class="wp-pick"><input type="checkbox" data-act="trade-pick" data-side="' + side + '" data-id="' + id + '" data-focus="pick-' + side + '-' + id + '"' + (checked ? ' checked' : '') + '>' +
-      faceHTML(p) + '<span class="wp-pname"><span class="wp-pn">' + esc(p.name) + (inj ? ' <span class="wp-inj is-' + inj.cls + '" title="' + esc(inj.tip) + '">' + inj.t + '</span>' : '') + '</span>' +
+      faceHTML(p) + '<span class="wp-pname"><span class="wp-pn">' + esc(p.name) + injHTML(p) + '</span>' +
       '<span class="wp-pm">' + esc(meta) + '</span></span>' +
       '<span class="wp-pickfp">' + f1(projFp(p)) + '<small>FP a game</small></span></label></li>';
   }
@@ -1322,6 +1443,7 @@
     if (!S.vm) return loadingHTML('Loading ' + ((S.base && S.base.weeks[S.weekIdx] && S.base.weeks[S.weekIdx].label) || 'week') + '…');
     const vm = S.vm;
     return heroHTML(vm) +
+      planHTML(vm) +
       '<div class="wp-pair">' + edgeHTML(vm) + teamsHTML(vm) + '</div>' +
       nightsHTML(vm) +
       '<section class="wp-sec wp-roster" id="wp-roster" aria-labelledby="h-roster">' + rosterHTML(vm) + '</section>' +
@@ -1347,6 +1469,8 @@
       if (sc) S.gridLeft = sc.scrollLeft;
     }
     el.classList.toggle('is-busy', !!(onWeek && S.loading && S.vm));
+    el.classList.toggle('is-enter', !!S.enter);
+    S.enter = false;
     el.innerHTML = bodyHTML();
     watchGrid();
     alignGrid();
@@ -1408,6 +1532,8 @@
     if (VIEWS.every((x) => x[0] !== v) || v === S.view) return;
     S.view = v;
     store.set('wp:view', v);
+    if (hashView() !== v) { try { window.location.hash = v; } catch (e) { /* the view still changes */ } }
+    S.enter = true;
     if (v !== 'week') ensureLeague();
     renderTop();
     renderViews();
@@ -1480,13 +1606,25 @@
     }
   }
 
+  // The week plan (WPModel.planWeek). The page works without it: any failure leaves the nights on their own.
+  function computePlan(ctx, vm) {
+    try {
+      const M = window.WPModel;
+      if (!vm || typeof M.planWeek !== 'function' || !vm.days.some((d) => d.kind !== 'past')) return null;
+      return M.planWeek(ctx, { vm });
+    } catch (err) {
+      if (window.console) console.warn(err);
+      return null;
+    }
+  }
+
   async function loadWeekAt(idx, opts) {
     const silent = !!(opts && opts.silent);
     const my = ++S.token;
     S.weekIdx = idx;
     S.error = null;
     S.loading = true;
-    if (!silent) { S.vm = null; S.wp = null; }
+    if (!silent) { S.vm = null; S.wp = null; S.plan = null; }
     renderTop();
     if (S.view === 'week') renderBody();
     try {
@@ -1497,13 +1635,15 @@
       if (my !== S.token) return;
       S.vm = vm;
       S.wp = computeWin(vm);
+      S.plan = computePlan(ctx, vm);
       S.syncedAt = Date.now();
       S.loading = false;
+      S.enter = !silent;
     } catch (err) {
       if (my !== S.token) return;
       S.loading = false;
       if (handleLoadError(err)) return;
-      if (silent && S.vm) { S.error = null; } else { S.error = err; S.vm = null; S.wp = null; }
+      if (silent && S.vm) { S.error = null; } else { S.error = err; S.vm = null; S.wp = null; S.plan = null; }
       if (window.console) console.error(err);
     }
     renderTop();
@@ -1606,6 +1746,12 @@
       if (act === 'prev') return go(-1);
       if (act === 'next') return go(1);
       if (act === 'refresh') return refresh(false);
+      if (act === 'theme') {
+        S.theme = THEMES[(THEMES.indexOf(S.theme) + 1) % THEMES.length];
+        store.set('wp:theme', S.theme);
+        applyTheme(S.theme);
+        return renderTop();
+      }
       if (act === 'view') return setView(t.dataset.view);
       if (act === 'retry-league') { ensureLeague({ force: true }); renderTop(); return renderBody(); }
       if (act === 'retry-view') { resetDerived(); return renderBody(); }
@@ -1669,6 +1815,11 @@
     const img = e.target;
     if (img && img.tagName === 'IMG' && img.parentNode && img.parentNode.classList.contains('wp-face')) img.parentNode.classList.add('has-img');
   }, true);
+
+  window.addEventListener('hashchange', () => {
+    const v = hashView();
+    if (v && S.phase === 'ready') setView(v);
+  });
 
   document.addEventListener('keydown', (e) => {
     if (S.phase !== 'ready' || S.view !== 'week' || e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return;

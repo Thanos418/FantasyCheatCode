@@ -6,7 +6,7 @@ A local week planner for an ESPN fantasy basketball points league. It replicates
 
 | View | What it shows |
 |---|---|
-| This week | Score, projected finish and your win chance; games edge; night cards with the best add and how much it moves your win chance; roster grid; streaming board. |
+| This week | Score, projected finish and your win chance; the week plan; games edge; night cards; roster grid; streaming board. |
 | Playoffs | Games per playoff round for your players, every NBA team and the best free agents, with expected points. |
 | Trends | Last 7 and 15 games against the season and ESPN's projection, minutes and starts, then buy-low and sell-high lists from the whole league. |
 | Trades | Analyzer for any trade with any team (both sides, next 4 weeks and rest of season, forced drops), and trade ideas that help both teams. |
@@ -14,7 +14,26 @@ A local week planner for an ESPN fantasy basketball points league. It replicates
 
 Win chance comes from simulating the rest of the week 5,000 times with per-game spread, rest days, day-to-day players, starters who sit without warning and uncertainty about each player's level. Those settings were fitted on 2025-26 with the backtest and checked on 2024-25.
 
-Add suggestions weigh two things: points gained this week (extra games in your lineup) and what the pickup and the player you drop are expected to score over the next 3 weeks (their real games and opponents). The week's best move is marked "Spend your add here"; a night whose best move only helps this week is a "Hold". Pending waiver claims are respected: their pickup is not suggested again and their drop is never suggested. A suggested waiver claim counts from the morning waivers process, so the player you would drop is gone from that day, even if the pickup's first game is later.
+Each view has its own address (`#week`, `#playoffs`, `#trends`, `#trades`, `#league`), so reload, Back and bookmarks land on it. The half-moon button in the top bar switches between the system theme, light and dark.
+
+### Add suggestions and the week plan
+
+Every move is judged by two numbers: points gained this week (extra games in your lineup) and what the pickup and the player you drop are expected to score over the next 3 weeks (their real games and opponents, allowing for missed games). A move is worth making when the two add up to a gain, so a clear long-term upgrade is suggested even when it adds nothing this week.
+
+**Your plan** puts the moves in order: the best one, then the best one with that move already made, and so on, until nothing is worth it or the week's adds run out. No player is dropped twice and each gain is on top of the ones before it. The plan is remade on every refresh. Night cards show the plan's moves for that night; a night without one is a "Hold", with the best pickup for this week only folded underneath.
+
+Each move is listed under the day it takes effect:
+
+- A free agent is picked up on a night he plays. A pickup made for the weeks ahead waits until the last day of the week, so the player dropped still plays his games.
+- A waiver claim is listed under the day it processes, with the deadline spelled out ("Enter this claim now, before Tue 08:00"). You enter it before that; ESPN processes it when waivers clear.
+- A player on IR who can play again shows up as "Activate from IR", with the drop that makes room. It uses no add.
+
+The add limit is a budget for the whole matchup week. ESPN's "1 per scoring period" setting means 7 for a 7-day week, and several can be made on the same day; the app counts adds made plus pending claims against it.
+
+- Pending waiver claims are respected: their pickup is not suggested again and their drop is never suggested.
+- A waiver claim counts from the morning waivers process, so the player you would drop is gone from that day, even if the pickup's first game is later.
+- The number of IR slots comes from ESPN. When one is free and a rostered player is Out, an add needs no drop and the card says who to move to IR; a trade for an Out player does not force a drop.
+- An injured player counts again from ESPN's expected return date, at 75% for the games this week. An injured free agent is only suggested from that date. The chip next to the name shows it ("OUT · Wed", "OUT · Nov 24").
 
 ## Requirements
 
@@ -64,7 +83,7 @@ Open `http://127.0.0.1:8765/?demo` to see the app on fake data. No cookies and n
 
 ## Daily digest
 
-`tools/digest.js` prints the morning facts as plain text, one per line: the week score, your win chance, how many of your players play today, injuries, role changes and the best add. It needs Node 18 or newer (nothing to install) and reads `config.json` for the league and your ESPN cookies. It asks ESPN directly, so the local server does not have to be running.
+`tools/digest.js` prints the morning facts as plain text, one per line: the week score, your win chance, how many of your players play today, injuries with expected return dates, role changes, today's move and the week plan. It needs Node 18 or newer (nothing to install) and reads `config.json` for the league and your ESPN cookies. It asks ESPN directly, so the local server does not have to be running.
 
 ```
 node tools/digest.js                 # the league in use
@@ -77,7 +96,17 @@ If the cookies are missing or ESPN rejects them, it says so and exits with code 
 
 ## Projections
 
-Each player's points per game blend his current-season average with ESPN's season projection (ESPN's projection weighs more early in the season). Each upcoming game then adjusts that number:
+Each player's points per game are a weighted average of this season's games and ESPN's season projection:
+
+| Part | Weight |
+|---|---|
+| ESPN's season projection | Counts as 10 games |
+| Games from the last 15 days | Count three times |
+| Games from 16 to 30 days ago | Count twice |
+| Older games | Count once |
+| Minutes over the last 15 days against the season | Move the number half as far as the minutes moved |
+
+Each upcoming game then adjusts that number:
 
 | Factor | Effect (2025-26 data) |
 |---|---|
@@ -93,24 +122,51 @@ python tools/build_factors.py            # --season 2026 --current 2027 --player
 
 Finished seasons are cached in `.cache/gamelogs/`; the season in progress is read fresh. In category leagues the factors are off, so values are game counts.
 
+Values that look more than a week ahead (the next 3 weeks of a pickup, trades, power rankings) also allow for missed games: a player's own share of team games played this season, pulled towards the usual 85%. They count an injured player from ESPN's expected return date, which the app reads from ESPN's public injury report through the local server (`/injuries`, no cookies sent). That report is ESPN's own estimate and tends to be optimistic.
+
 ## Backtest
 
 `tools/backtest.js` replays finished NBA seasons through the app's own code, using only what was known before each game. It needs Node 18 or newer and public ESPN data; no cookies.
 
 ```
-node tools/backtest.js                # 2025-26 and 2024-25, 10 and 16 teams, 3 simulated leagues each (several minutes)
-node tools/backtest.js --quick        # one season, 10 teams, one league (under a minute)
+node tools/backtest.js                # 2025-26 and 2024-25, 10 and 16 teams, 3 simulated leagues each (allow about 20 minutes)
+node tools/backtest.js --quick        # one season, 10 teams, one league (about a minute)
 node tools/backtest.js --seasons 2026 --teams 12 --leagues 5 --players 400
 ```
 
 | Question | How it is tested |
 |---|---|
 | How far off are the per-game projections, and which recipe is closest? | Every game of the season, real results |
-| Do real games and opponents beat an average schedule over the next 3 weeks? | Every player, every week, real results |
+| Do real games, opponents and an allowance for missed games beat an average schedule over the next 3 weeks? | Every player, every week, real results |
 | When the app says 70%, do you win 70% of the time? | Simulated leagues |
-| Does following the add suggestions beat standing still? | Simulated leagues |
+| Does following the week plan beat standing still, and the simpler strategies? | Simulated leagues |
 
-Your real leagues did not exist in those seasons, and ESPN keeps no past free-agent pools or daily injury lists, so the last two run on simulated leagues: rosters drafted from ESPN's preseason projections, the other teams stand still, nobody competes for free agents, and a player counts as out after missing his team's last 2 games. Treat those add-suggestion results as a ranking of strategies, not as points you would really gain. Fantasy points use ESPN's default points scoring.
+Your real leagues did not exist in those seasons, and ESPN keeps no past free-agent pools or daily injury lists, so the last two run on simulated leagues: rosters drafted from ESPN's preseason projections, the other teams stand still, nobody competes for free agents, adds are capped at 7 a week, and a player counts as out after missing his team's last 2 games. Treat those add-suggestion results as a ranking of strategies, not as points you would really gain. Fantasy points use ESPN's default points scoring.
+
+### What it found (Nov 2026)
+
+Projections, real results:
+
+| Measure | 2025-26 | 2024-25 |
+|---|---|---|
+| Points off per game, every game counting the same | 10.31 | 10.43 |
+| Points off per game, recent games and minutes (the app) | 10.13 | 10.29 |
+| The same with each game's venue, opponent and rest | 10.10 | 10.26 |
+| Next 3 weeks, points off, real games only | 86.2 | 83.6 |
+| Next 3 weeks, points off, missed games allowed for (the app) | 70.2 | 69.6 |
+| Picks the better of two players over those weeks | 73.5% to 76.1% | 74.3% to 75.9% |
+
+Simulated leagues, points a week gained over never adding anyone (adds a week in brackets):
+
+| Strategy | 2025-26, 10 teams | 2025-26, 16 teams | 2024-25, 10 teams | 2024-25, 16 teams |
+|---|---|---|---|---|
+| The week plan (the app) | +380.7 (5.7) | +333.6 (5.0) | +313.9 (5.4) | +335.8 (4.8) |
+| Every night the top add is worth it | +305.1 (5.4) | +306.7 (5.1) | +276.6 (5.2) | +312.2 (5.0) |
+| Best add every night, this week only | +281.2 (6.3) | +313.2 (6.3) | +305.1 (6.3) | +333.4 (6.2) |
+| Only the single best move of the week | +254.1 (2.9) | +271.0 (2.7) | +239.1 (2.8) | +281.2 (2.6) |
+| Win chance, average gap between forecast and result | 2.7% | 2.3% | 3.2% | 3.2% |
+
+The plan scores most in all four setups: clearly in two, by a few points in the other two (the ranges overlap there). On average it gains +341 a week against +308 for adding the best player every night for this week alone. Two things to keep in mind. The plan may make several moves on one day, as ESPN allows, while the other three strategies make at most one a day. And the simulation is kind to every strategy that drops players freely, because nobody else picks them up.
 
 ## Tests
 
@@ -126,13 +182,13 @@ node --test
 
 | Path | What it is |
 |---|---|
-| `server.py` | Local server: static files, `/config`, and a proxy to the ESPN API with your cookies. |
+| `server.py` | Local server: static files, `/config`, a proxy to the ESPN API with your cookies, and ESPN's public injury report. |
 | `config.example.json` | Template for `config.json`. |
 | `start.bat`, `start.sh` | Launchers for Windows and macOS/Linux. |
 | `web/index.html` | Page shell. |
 | `web/app.js` | UI: renders the scoreboard, nights, roster grid and streaming board. |
 | `web/styles.css` | Styles, light and dark. |
-| `web/model.js` | Pure logic: weeks, projections, lineup matching, recommendations. |
+| `web/model.js` | Pure logic: weeks, projections, injuries, lineup matching, recommendations, the week plan. |
 | `web/espn.js` | Data layer: fetches and normalises ESPN responses. |
 | `web/demo-data.js` | Fake ESPN responses for `?demo`. |
 | `web/insights.js` | Pure logic for win chance, playoffs, trends, trades, power rankings and the digest. |

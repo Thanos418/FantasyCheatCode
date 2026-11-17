@@ -64,7 +64,7 @@
   /* Free agents: [name, pos, team, fp, %rostered, flag ('' | 'W' waivers | 'DTD' | 'OUT')] */
   const FAS = [
     ['Jock Landale', 'C', 'ATL', 21.5, 1.2, ''], ['Vit Krejci', 'SG/SF', 'ATL', 16.2, 2, ''], ['Payton Pritchard', 'PG/SG', 'BOS', 24.3, 61, ''],
-    ['Sam Hauser', 'SF/PF', 'BOS', 15.9, 12, ''], ['Luka Garza', 'C', 'BOS', 14.8, 3, ''], ['Miles Bridges', 'SF/PF', 'CHA', 25.6, 55, ''],
+    ['Sam Hauser', 'SF/PF', 'BOS', 15.9, 12, ''], ['Luka Garza', 'C', 'BOS', 14.8, 3, ''], ['Miles Bridges', 'SF/PF', 'CHA', 35.4, 55, ''],
     ['Moussa Diabate', 'C', 'CHA', 17.5, 4, ''], ['Tre Mann', 'PG', 'CHA', 15.2, 2, ''], ['Sam Merrill', 'SG', 'CLE', 16.9, 8, ''],
     ['Max Strus', 'SF', 'CLE', 17.4, 10, ''], ["Caris LeVert", 'SG/SF', 'CLE', 18.2, 14, 'DTD'], ['Moses Moody', 'SG/SF', 'GSW', 19.0, 27, ''],
     ['Brandin Podziemski', 'SG', 'GSW', 23.4, 49, 'W'], ['Gary Payton II', 'PG', 'GSW', 15.1, 4, ''], ['Jabari Smith Jr.', 'PF', 'HOU', 22.7, 58, ''],
@@ -73,7 +73,7 @@
     ['Rui Hachimura', 'PF', 'LAL', 20.3, 25, ''], ['Jaxson Hayes', 'C', 'LAL', 16.8, 6, ''], ['Dalton Knecht', 'SF', 'LAL', 15.6, 9, ''],
     ['Naz Reid', 'PF/C', 'MIN', 20.8, 52, ''], ['Donte DiVincenzo', 'SG', 'MIN', 18.8, 23, ''], ['Jaden McDaniels', 'SF', 'MIN', 20.4, 37, ''],
     ['Nick Richards', 'C', 'PHX', 18.6, 14, ''], ['Ayo Dosunmu', 'SG', 'CHI', 22.1, 25, ''], ['Coby White', 'PG', 'CHI', 23.1, 44, ''],
-    ["Kel'el Ware", 'C', 'MIA', 24.5, 38, 'W'], ['Isaiah Hartenstein', 'C', 'OKC', 20.4, 41, ''], ['Cason Wallace', 'PG/SG', 'OKC', 19.5, 33, ''],
+    ["Kel'el Ware", 'C', 'MIA', 32.5, 38, 'W'], ['Isaiah Hartenstein', 'C', 'OKC', 20.4, 41, ''], ['Cason Wallace', 'PG/SG', 'OKC', 19.5, 33, ''],
     ['Santi Aldama', 'PF', 'MEM', 19.2, 18, 'W'], ['Jaylen Wells', 'SF', 'MEM', 17.8, 22, ''], ['Zach Edey', 'C', 'MEM', 21.0, 28, 'W'],
     ['Quentin Grimes', 'SG', 'PHI', 19.9, 21, ''], ['Gradey Dick', 'SF', 'TOR', 16.4, 7, ''], ['Duncan Robinson', 'SG/SF', 'MIA', 18.1, 15, ''],
     ['Jonas Valanciunas', 'C', 'DEN', 15.8, 6, ''], ['Dereck Lively II', 'C', 'DAL', 19.4, 20, 'OUT'],
@@ -482,8 +482,24 @@
     ] };
   }
 
+  // ESPN's public injury report, in its own shape, for the demo's hurt players.
+  function injuriesRaw() {
+    const et = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York', year: 'numeric', month: '2-digit', day: '2-digit' });
+    const day = (n) => et.format(NOW + n * 86400000); // ESPN dates are US Eastern
+    const row = (id, name, status, back, fantasy, type, note) => ({ status, date: new Date(NOW - 86400000).toISOString(), shortComment: note,
+      athlete: { displayName: name, links: [{ href: 'https://www.espn.com/nba/player/_/id/' + id + '/' + name.toLowerCase().replace(/[^a-z]+/g, '-') }] },
+      details: { returnDate: back, type, fantasyStatus: { description: fantasy, abbreviation: fantasy } } });
+    const lively = FA_LIST.find((p) => p.name === 'Dereck Lively II');
+    return { injuries: [{ displayName: 'Demo', injuries: [
+      row(3059318, 'Joel Embiid', 'Out', day(2), 'OUT', 'Knee', 'Embiid (knee) is expected back for Saturday\u2019s game.'),
+      row(4396993, 'Tyrese Haliburton', 'Out', day(26), 'OUT', 'Hamstring', 'Haliburton (hamstring) will be re-evaluated in three weeks.'),
+      row(4432158, 'Evan Mobley', 'Day-To-Day', day(0), 'GTD', 'Ankle', 'Mobley (ankle) is questionable for Thursday.'),
+    ].concat(lively ? [row(lively.id, lively.name, 'Out', day(240), 'OFS', 'Foot', 'Lively (foot) is out for the season.')] : []) }] };
+  }
+
   function handle(rel, q) {
     const views = q.views || [], has = (v) => views.indexOf(v) >= 0, sp = q.params && q.params.scoringPeriodId != null ? +q.params.scoringPeriodId : CUR;
+    if (rel === 'injuries') return injuriesRaw();
     if (/^seasons\/\d+$/.test(rel) && has('proTeamSchedules_wl')) return proRaw();
     if (/\/leagues\/\d+$/.test(rel)) {
       if (has('mRoster')) {

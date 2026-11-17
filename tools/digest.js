@@ -170,7 +170,8 @@ async function digestOne(cfg, lg, demo) {
     const wp = ctx.WPInsights.winProbability(weekVm, { factors: weekVm.isPoints ? wctx.factors : null });
     const mine = (wctx.rosters[base.myTeamId] || {}).current || [];
     const trendRows = ctx.WPInsights.trends(mine, base.league.season);
-    const text = ctx.WPInsights.digest({ vm: weekVm, wp, trendRows, today: base.league.currentSp });
+    const plan = ctx.WPModel.planWeek(wctx, { vm: weekVm });
+    const text = ctx.WPInsights.digest({ vm: weekVm, wp, trendRows, plan, today: base.league.currentSp });
     console.log(Array.isArray(text) ? text.join('\n') : String(text));
   } catch (e) {
     if (e instanceof Fail) throw e;

@@ -41,6 +41,14 @@ Ran the bundled `factors.js + model.js + insights.js + espn.js` inside the logge
    `winget install GitHub.cli`, `gh auth login`, then
    `gh repo create Thanos418/fantasy-week-planner --private --source=. --push`.
 
+## State (Nov 9 2026)
+
+Since the notes above: several leagues, pending claims, IR slots, long-term value, the backtest, and
+(Nov 9) projections that weigh recent games and minutes, an allowance for missed games, ESPN's expected
+return dates, the week plan and the redesigned week view. Nov 10: the add limit is a weekly budget (it
+was wrongly treated as one a day), claims say when to enter them, and players coming off IR are plan
+steps. `node --test` passes (120 tests). SPEC.md "Phase 3" has the contracts.
+
 ## Backtest
 
 `node tools/backtest.js` drives web/model.js and web/insights.js on 2024-25 and 2025-26 (see README). It stops
@@ -51,3 +59,6 @@ with an error if its per-game recipe stops matching `WPModel.projectPlayer`, so 
 - Win chance currently assumes starters who sit are not replaced from the bench.
 - Trade ideas only look at the top 10 players of each team; a deeper search would find more 2-for-1s.
 - The digest could run every morning from a scheduled task.
+- A free agent whose team has no game left this week is never suggested, even as a long-term pickup.
+- ESPN may refuse adds while a player who is no longer Out sits in an IR slot; the app does not know.
+- ESPN's return dates cannot be backtested; `BACK_PLAY` (0.75) is a judgement, not a fitted value.

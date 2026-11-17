@@ -617,18 +617,23 @@ test('computeWeek: adds from transactions', () => {
   assert.strictEqual(vm.adds.limit, 1);
   assert.strictEqual(vm.adds.weekLimit, 7);
   assert.strictEqual(vm.adds.pending.length, 1);
+  assert.strictEqual(vm.adds.left, 4, '7 for the week, 2 made, 1 held by the pending claim');
   assert.deepStrictEqual(vm.adds.pending[0].add, { id: 202, name: 'Wave Waiver' });
   assert.deepStrictEqual(vm.adds.pending[0].drop, { id: 7, name: 'Bo Seven' });
   const vm2 = M.computeWeek(buildCtx({ noTx: true }));
   assert.strictEqual(vm2.adds.used, 0);
   assert.strictEqual(vm2.adds.todayUsed, 0);
+  assert.strictEqual(vm2.adds.left, 7);
   assert.deepStrictEqual(vm2.adds.pending, []);
 });
 
-test('computeWeek: recommendations fill open slots and respect waivers / daily limit', () => {
+test('computeWeek: recommendations fill open slots and respect waivers', () => {
   const vm = M.computeWeek(noClaim(buildCtx())); // without the pending claim, so Bo Seven (7) can be dropped
-  // today's add already used -> no rec for today
-  assert.deepStrictEqual(vm.recs.byDay[9], []);
+  // An add was already made today. The limit is a budget for the week, so today is still open:
+  // 201 fills an open slot tonight and on the two nights after (+20 each).
+  const r9 = vm.recs.byDay[9].find((r) => r.fa.id === 201);
+  assert.ok(r9);
+  assert.ok(Math.abs(r9.gain - 60) < 1e-9);
   const r10 = vm.recs.byDay[10];
   assert.ok(r10.length >= 1);
   assert.strictEqual(r10[0].fa.id, 201);
@@ -658,9 +663,9 @@ test('computeWeek: recommendations fill open slots and respect waivers / daily l
   const b = vm.recs.board;
   assert.ok(b.length >= 2);
   const b201 = b.find((x) => x.fa.id === 201);
-  assert.strictEqual(b201.bestSp, 10);
+  assert.strictEqual(b201.bestSp, 9);
   assert.strictEqual(b201.gamesLeft, 3); // sp9 (unstarted), 10, 11
-  assert.deepStrictEqual(b201.days, { 10: 'start', 11: 'start' });
+  assert.deepStrictEqual(b201.days, { 9: 'start', 10: 'start', 11: 'start' });
   const b202 = b.find((x) => x.fa.id === 202);
   assert.strictEqual(b202.bestSp, 11);
   assert.deepStrictEqual(b202.days, { 11: 'start' });
@@ -777,12 +782,13 @@ function withLaterGames(ctx, only12) {
   ctx.sched = M.buildProSchedule(proRawFrom(GAMES.concat(extra)));
   return ctx;
 }
+const availOf = (ctx, p) => M.availability(p, 2027, M.teamGamesBefore(ctx.sched, p.proTeamId, ctx.league.currentSp));
 function laterValue(ctx, p) {
   let v = 0;
   for (let sp = 14; sp <= 34; sp++) {
-    if (M.teamGame(ctx.sched, p.proTeamId, sp)) v += M.projectPlayer(p, 2027, true).fp * M.gameMult(ctx.sched, ctx.factors || null, p.proTeamId, sp).mult;
+    if (M.teamGame(ctx.sched, p.proTeamId, sp) && !M.outOn(p, sp)) v += M.projectPlayer(p, 2027, true).fp * M.gameMult(ctx.sched, ctx.factors || null, p.proTeamId, sp).mult;
   }
-  return v;
+  return v * availOf(ctx, p);
 }
 
 test('computeWeek: long-term value counts real later games, net = gain + longTerm, sorted by net', () => {
@@ -814,8 +820,10 @@ test('computeWeek: later opponents change the long-term value', () => {
     const r = vm.recs.board.find((x) => x.fa.id === id);
     return r.longTerm + (r.drop ? laterValue(ctx, r.drop) : 0);
   };
-  assert.ok(Math.abs(later(401) - 20 * 21 * 1.2) < 1e-9);
-  assert.ok(Math.abs(later(402) - 20 * 21 * 0.8) < 1e-9);
+  // no games played yet this season: 8.5 of 10 + his team's games so far
+  const share = (team) => 8.5 / (10 + M.teamGamesBefore(ctx.sched, team, 9));
+  assert.ok(Math.abs(later(401) - 20 * 21 * 1.2 * share(1)) < 1e-9);
+  assert.ok(Math.abs(later(402) - 20 * 21 * 0.8 * share(2)) < 1e-9);
 });
 
 test('computeWeek: exactly one "spend your add here", on the best worthwhile move', () => {
@@ -863,7 +871,7 @@ test('computeWeek: a pending claim is respected: its drop stays, its pickup is n
   assert.ok(!vm.recs.board.some((r) => r.fa.id === 202));
 });
 
-test('computeWeek: a pending claim joins the roster on its day and uses that day’s add', () => {
+test('computeWeek: a pending claim joins the roster on its day and holds one of the week’s adds', () => {
   const vm = M.computeWeek(buildCtx());
   // fixture: Wave Waiver (202, C, pro team 4) clears waivers on sp 11, Bo Seven (7) leaves
   const claimed = rowOf(vm.me, 202);
@@ -876,10 +884,42 @@ test('computeWeek: a pending claim joins the roster on its day and uses that day
   // he raises sp 11: before, p3 35 + p5 10 + p8 8 = 53
   const plain = M.computeWeek(noClaim(buildCtx()));
   assert.ok(vm.me.days[11].remProj > plain.me.days[11].remProj);
-  // 1 add a day: the claim uses sp 11's add
+  // the night card can say so, and other pickups stay possible that night
   assert.deepStrictEqual(vm.recs.claimDays[11].map((x) => x.id), [202]);
-  assert.deepStrictEqual(vm.recs.byDay[11], []);
-  assert.ok(vm.recs.board.every((b) => b.bestSp !== 11));
+  assert.ok(vm.recs.byDay[11].length > 0);
+  assert.ok(vm.recs.byDay[11].every((r) => r.fa.id !== 202));
+  assert.strictEqual(vm.adds.left, 4);
+});
+
+test('computeWeek: the add limit is a budget for the week, not one a day', () => {
+  // ESPN: "1 per scoring period" = 7 for a 7-day week, and several can be made on the same day
+  const many = noClaim(buildCtx());
+  many.transactions = [8, 8, 9, 9, 9].map((sp, i) => ({ teamId: 6, type: 'FREEAGENT', status: 'EXECUTED', scoringPeriodId: sp, items: [{ type: 'ADD', playerId: 900 + i }] }));
+  const vm = M.computeWeek(many);
+  assert.strictEqual(vm.adds.weekLimit, 7);
+  assert.strictEqual(vm.adds.used, 5);
+  assert.strictEqual(vm.adds.todayUsed, 3);
+  assert.strictEqual(vm.adds.left, 2);
+  assert.ok(vm.recs.byDay[9].length > 0, 'three adds today do not close today');
+  assert.strictEqual(vm.recs.note, null);
+  // ESPN's own counter wins when it is higher than the transactions we can see
+  const counted = noClaim(buildCtx({ noTx: true }));
+  counted.league = Object.assign({}, counted.league, { teams: Object.assign({}, counted.league.teams, { 6: Object.assign({}, counted.league.teams[6], { addsByMp: { 2: 7 } }) }) });
+  const full = M.computeWeek(counted);
+  assert.strictEqual(full.adds.left, 0);
+  assert.match(full.recs.note, /used all 7 adds/);
+  assert.ok(Object.values(full.recs.byDay).every((a) => a.length === 0));
+});
+
+test('computeWeek: pending claims can hold the last adds of the week', () => {
+  const ctx = buildCtx(); // 2 adds made, 1 claim pending
+  ctx.league = Object.assign({}, ctx.league, { acq: { limit: 3, perDay: false } });
+  const vm = M.computeWeek(ctx);
+  assert.strictEqual(vm.adds.weekLimit, 3);
+  assert.strictEqual(vm.adds.left, 0);
+  assert.match(vm.recs.note, /pending claim takes the last of your 3 adds/);
+  assert.ok(Object.values(vm.recs.byDay).every((a) => a.length === 0));
+  assert.strictEqual(M.planWeek(ctx, { vm }).moves.length, 0);
 });
 
 test('computeWeek: a waiver claim counts from the morning it processes, not his first game', () => {
@@ -907,4 +947,341 @@ test('computeWeek: a free agent can still wait for a night he plays', () => {
   const vm = M.computeWeek(ctx);
   assert.strictEqual(vm.recs.byDay[10].length, 0);
   assert.strictEqual(vm.recs.byDay[11][0].fa.id, 502);
+});
+
+function withIrSlots(ctx, n) { ctx.league = Object.assign({}, ctx.league, { irCount: n }); return ctx; }
+const allRecs = (vm) => Object.values(vm.recs.byDay).flat();
+
+test('computeWeek: a free IR slot and an Out player mean an add needs no drop', () => {
+  // one IR slot, already used, and a full roster: every add needs a drop
+  const full = allRecs(M.computeWeek(noClaim(buildCtx())));
+  assert.ok(full.length && full.every((r) => r.drop && !r.irMove));
+  // a second IR slot: Cal Two (Out, id 2) can move there
+  const vm = M.computeWeek(withIrSlots(noClaim(buildCtx()), 2));
+  const two = allRecs(vm);
+  assert.ok(two.length && two.every((r) => r.drop === null && r.irMove.id === 2));
+  assert.ok(vm.recs.board.length && vm.recs.board.every((b) => b.drop === null && b.irMove.id === 2));
+});
+
+test('computeWeek: only Out and IR players can take a free IR slot', () => {
+  ['DAY_TO_DAY', 'SUSPENSION'].forEach((inj) => {
+    const ctx = withIrSlots(noClaim(buildCtx()), 2);
+    ctx.rosters[6].current.find((p) => p.id === 2).injury = inj;
+    const all = allRecs(M.computeWeek(ctx));
+    assert.ok(all.length && all.every((r) => r.drop && !r.irMove), inj);
+  });
+});
+
+test('computeWeek: an open roster spot does not need the IR move', () => {
+  const ctx = withIrSlots(noClaim(buildCtx()), 2);
+  ctx.rosters[6].current = ctx.rosters[6].current.filter((p) => p.id !== 7);
+  const all = allRecs(M.computeWeek(ctx));
+  assert.ok(all.length && all.every((r) => r.drop === null && !r.irMove));
+});
+
+test('computeWeek: an Out player already leaving in a pending claim cannot take the IR slot', () => {
+  const ctx = withIrSlots(noClaim(buildCtx()), 2);
+  ctx.transactions = ctx.transactions.concat([{ teamId: 6, type: 'WAIVER', status: 'PENDING', scoringPeriodId: 9, items: [{ type: 'ADD', playerId: 202 }, { type: 'DROP', playerId: 2 }] }]);
+  const all = allRecs(M.computeWeek(ctx));
+  assert.ok(all.length && all.every((r) => r.drop && r.drop.id !== 2 && !r.irMove));
+});
+
+/* ------------------------------------------------ recent form, availability, injuries */
+
+const split = (id, avg, gp, min) => stat(id, { appliedAverage: avg, appliedTotal: avg * gp, stats: Object.assign({ 42: gp }, min != null ? { 40: min * gp } : {}) });
+const proj27 = (fp) => stat('102027', { statSourceId: 1, appliedAverage: fp, stats: { 42: 70 } });
+const playerWith = (stats, team, injury) => M.normPlayer({ playerId: 900, lineupSlotId: 12, playerPoolEntry: { player: rawPlayer(900, 'Test Player', team || 1, PG, stats, injury) } });
+
+test('projectPlayer: games from the last 15 days count three times, the 15 before twice', () => {
+  // 20 games at 30; the last 30 days hold 10 at 36, the last 15 days 5 at 40; ESPN says 25
+  const p = playerWith([split('002027', 30, 20), split('032027', 36, 10), split('022027', 40, 5), proj27(25)]);
+  const want = (20 * 30 + 10 * 36 + 5 * 40 + 10 * 25) / (20 + 10 + 5 + 10);
+  assert.ok(Math.abs(M.projectPlayer(p, 2027).fp - want) < 1e-9);
+  // no 30-day split in the data: the 15-day games stand in for it
+  const q = playerWith([split('002027', 30, 20), split('022027', 40, 5), proj27(25)]);
+  assert.ok(Math.abs(M.projectPlayer(q, 2027).fp - (20 * 30 + 2 * 5 * 40 + 250) / (20 + 10 + 10)) < 1e-9);
+  // a steady player is unchanged
+  const s = playerWith([split('002027', 30, 20), split('032027', 30, 10), split('022027', 30, 5), proj27(30)]);
+  assert.ok(Math.abs(M.projectPlayer(s, 2027).fp - 30) < 1e-9);
+  // splits can never count more games than the season has
+  const odd = playerWith([split('002027', 30, 2), split('022027', 40, 9), proj27(25)]);
+  assert.ok(Math.abs(M.projectPlayer(odd, 2027).fp - (2 * 30 + 2 * 2 * 40 + 250) / (2 + 4 + 10)) < 1e-9);
+});
+
+test('projectPlayer: a change in minutes moves the number part of the way', () => {
+  const stats = (m15) => [split('002027', 30, 20, 30), split('032027', 30, 10, 30), split('022027', 30, 7, m15), proj27(30)];
+  // 36 minutes lately against 30 on the season: +20%, trusted 7 / (7 + 3), half of it applied
+  const up = M.projectPlayer(playerWith(stats(36)), 2027);
+  assert.ok(Math.abs(up.minTrend - 0.5 * 0.7 * 0.2) < 1e-9);
+  assert.ok(Math.abs(up.fp - 30 * 1.07) < 1e-9);
+  assert.ok(Math.abs(up.mpg - 30) < 1e-9 && Math.abs(up.mpgL15 - 36) < 1e-9);
+  const down = M.projectPlayer(playerWith(stats(21)), 2027);
+  assert.ok(Math.abs(down.fp - 30 * (1 - 0.5 * 0.7 * 0.3)) < 1e-9);
+  // fewer than 5 games this season, or no minutes in the data: left alone
+  const early = playerWith([split('002027', 30, 4, 30), split('022027', 30, 4, 40), proj27(30)]);
+  assert.strictEqual(M.projectPlayer(early, 2027).minTrend, 0);
+  const none = playerWith([split('002027', 30, 20), split('022027', 30, 7), proj27(30)]);
+  assert.strictEqual(M.projectPlayer(none, 2027).minTrend, 0);
+  assert.ok(Math.abs(M.projectPlayer(none, 2027).fp - 30) < 1e-9);
+});
+
+test('availability: his own record, pulled towards 85%', () => {
+  const p = (gp) => playerWith(gp ? [split('002027', 30, gp)] : []);
+  assert.ok(Math.abs(M.availability(p(0), 2027, 0) - 0.85) < 1e-9);
+  assert.ok(Math.abs(M.availability(p(10), 2027, 10) - 18.5 / 20) < 1e-9);
+  assert.ok(Math.abs(M.availability(p(5), 2027, 10) - 13.5 / 20) < 1e-9);
+  assert.ok(Math.abs(M.availability(p(40), 2027, 40) - 48.5 / 50) < 1e-9);
+  // traded: more games than his new team has played
+  assert.ok(Math.abs(M.availability(p(12), 2027, 10) - 20.5 / 22) < 1e-9);
+  const sched = M.buildProSchedule(proRawFrom(GAMES));
+  assert.strictEqual(M.teamGamesBefore(sched, 1, 9), 2);
+  assert.strictEqual(M.teamGamesBefore(sched, 1, 11), 3);
+  assert.strictEqual(M.teamGamesBefore(sched, 99, 11), 0);
+});
+
+const report = (rows) => ({ injuries: [{ displayName: 'Team', injuries: rows.map((r) => ({
+  status: r.status || 'Out', shortComment: r.note || '', date: '2026-10-28T12:00Z',
+  athlete: { displayName: 'X', links: r.id ? [{ href: 'https://www.espn.com/nba/player/_/id/' + r.id + '/x-y' }] : [] },
+  details: Object.assign({ type: r.type || 'Knee' }, r.back ? { returnDate: r.back } : {}, r.fs ? { fantasyStatus: { description: r.fs } } : {}),
+})) }] });
+
+test('normInjuries reads ids, return dates and season-ending injuries', () => {
+  const r = M.normInjuries(report([
+    { id: 11, back: '2026-11-05', note: 'Back next week.' }, { id: 12, back: '2027-07-01', fs: 'OFS' },
+    { id: 13, status: 'Day-To-Day', back: '2026-10-29', fs: 'GTD' }, { id: 14 }, { back: '2026-11-01' },
+  ]));
+  assert.deepStrictEqual(Object.keys(r), ['11', '12', '13', '14']);
+  assert.strictEqual(r[11].returnDate, '2026-11-05');
+  assert.strictEqual(r[11].note, 'Back next week.');
+  assert.strictEqual(r[11].season, false);
+  assert.strictEqual(r[12].season, true);
+  assert.strictEqual(r[13].status, 'Day-To-Day');
+  assert.strictEqual(r[14].returnDate, null);
+  assert.deepStrictEqual(M.normInjuries(null), {});
+  assert.deepStrictEqual(M.normInjuries({ injuries: [{}, { injuries: [{}] }] }), {});
+});
+
+test('applyInjuries: expected return day, never today for a player who is out', () => {
+  const sched = M.buildProSchedule(proRawFrom(GAMES)); // day 1 = Oct 20 2026
+  const mkP = (id, injury) => { const p = playerWith([], 1, injury); p.id = id; return p; };
+  const ps = [mkP(11, 'OUT'), mkP(12, 'OUT'), mkP(13, 'DAY_TO_DAY'), mkP(14, 'OUT'), mkP(15, 'OUT'), mkP(16, 'ACTIVE')];
+  const rep = M.normInjuries(report([
+    { id: 11, back: '2026-11-05' }, { id: 12, back: '2027-07-01', fs: 'OFS' }, { id: 13, status: 'Day-To-Day', back: '2026-10-28' },
+    { id: 14 }, { id: 15, back: '2026-10-28' },
+  ]));
+  M.applyInjuries(ps, rep, sched, 9); // today = day 9 = Oct 28
+  assert.deepStrictEqual(ps[0].back, { sp: 17, date: '2026-11-05', season: false });
+  assert.strictEqual(ps[1].back.sp, Infinity);
+  assert.strictEqual(ps[1].back.season, true);
+  assert.strictEqual(ps[2].back.sp, 9);
+  assert.strictEqual(ps[3].back, undefined, 'listed without a date: nothing assumed');
+  assert.strictEqual(ps[3].news.type, 'Knee');
+  assert.deepStrictEqual(ps[4].back, { sp: 10, date: '2026-10-29', season: false }, 'out today: tomorrow at the earliest');
+  assert.strictEqual(ps[5].back, undefined);
+  assert.strictEqual(M.outOn(ps[0], 16), true);
+  assert.strictEqual(M.outOn(ps[0], 17), false);
+  assert.strictEqual(M.outOn(ps[1], 400), true);
+  assert.strictEqual(M.outOn(ps[2], 9), false, 'day-to-day is not out');
+  assert.strictEqual(M.outOn(ps[3], 400), true, 'no date: out until ESPN says otherwise');
+});
+
+test('computeWeek: an out player counts again from his expected return, at 75%', () => {
+  const ctx = noClaim(buildCtx());
+  const cal = ctx.rosters[6].current.find((p) => p.id === 2); // Cal Two, C, 40 a game, out, team 1 plays day 10
+  const before = M.computeWeek(ctx);
+  assert.strictEqual(before.me.rows.find((r) => r.player.id === 2).cells[10].out, true);
+  cal.back = { sp: 10, date: '2026-10-29', season: false };
+  const vm = M.computeWeek(ctx);
+  const cell = vm.me.rows.find((r) => r.player.id === 2).cells[10];
+  assert.strictEqual(cell.out, false);
+  assert.strictEqual(cell.back, true);
+  assert.strictEqual(cell.start, true);
+  assert.ok(Math.abs(cell.fp - 40 * M.BACK_PLAY) < 1e-9);
+  assert.ok(vm.me.projFinal > before.me.projFinal + 1);
+  // not back until after this week: nothing changes
+  cal.back = { sp: 14, date: '2026-11-02', season: false };
+  assert.strictEqual(M.computeWeek(ctx).me.projFinal, before.me.projFinal);
+});
+
+test('computeWeek: an out free agent is only suggested from his expected return', () => {
+  const ctx = noClaim(buildCtx());
+  const hurt = ctx.freeAgents.find((p) => p.id === 203); // Hurt Free, 50 a game, out, team 4 plays days 9, 10, 11
+  const ids = (vm) => [].concat(...Object.values(vm.recs.byDay)).filter((r) => r.fa.id === 203).map((r) => r.sp);
+  assert.deepStrictEqual(ids(M.computeWeek(ctx)), [], 'no return date: never');
+  hurt.back = { sp: 11, date: '2026-10-30', season: false };
+  assert.deepStrictEqual(ids(M.computeWeek(ctx)), [11]);
+  hurt.back = { sp: Infinity, date: null, season: true };
+  assert.deepStrictEqual(ids(M.computeWeek(ctx)), []);
+});
+
+test('computeWeek: long-term value starts at the expected return and allows for missed games', () => {
+  const ctx = noClaim(withLaterGames(buildCtx()));
+  const fa = M.normPlayer({ id: 601, status: 'FREEAGENT', player: rawPlayer(601, 'Back Soon', 4, CE, seasonStats(2027, { proj: 30 }), 'OUT') });
+  fa.back = { sp: 11, date: '2026-10-30', season: false };
+  const late = M.normPlayer({ id: 602, status: 'FREEAGENT', player: rawPlayer(602, 'Back Later', 4, CE, seasonStats(2027, { proj: 30 }), 'OUT') });
+  late.back = { sp: 24, date: '2026-11-12', season: false };
+  ctx.freeAgents = [fa, late];
+  const vm = M.computeWeek(ctx);
+  const rec = (id) => [].concat(...Object.values(vm.recs.byDay)).find((r) => r.fa.id === id);
+  const value = (r) => r.longTerm + (r.drop ? laterValue(ctx, r.drop) : 0);
+  // team 4 plays the even days 14..34: 11 games, 8.5 / (10 + its 1 game so far) of them expected
+  assert.ok(Math.abs(value(rec(601)) - 30 * 11 * 8.5 / 11) < 1e-9);
+  assert.strictEqual(rec(602), undefined, 'not back this week: no pickup to suggest');
+  assert.ok(Math.abs(laterValue(ctx, late) - 30 * 6 * 8.5 / 11) < 1e-9, 'even days 24..34 only');
+});
+
+/* ------------------------------------------------------------ week plan */
+
+test('planWeek: each move is made on top of the earlier ones and no player is dropped twice', () => {
+  const ctx = noClaim(withLaterGames(buildCtx()));
+  const vm = M.computeWeek(ctx);
+  const plan = M.planWeek(ctx, { vm });
+  assert.ok(plan.moves.length >= 2, 'the fixture has worthwhile adds on more than one night');
+  assert.strictEqual(plan.moves.find((m) => m.step === 1).fa.id, vm.recs.spend.fa.id, 'the first step is the week\'s best move');
+  const days = plan.moves.map((m) => m.sp), drops = plan.moves.filter((m) => m.drop).map((m) => m.drop.id), adds = plan.moves.map((m) => m.fa.id);
+  assert.deepStrictEqual(days, days.slice().sort((a, b) => a - b), 'in day order');
+  assert.ok(plan.moves.length <= vm.adds.left, 'never more moves than adds left this week');
+  assert.strictEqual(new Set(drops).size, drops.length);
+  assert.strictEqual(new Set(adds).size, adds.length);
+  plan.moves.forEach((m) => assert.ok(m.worth));
+  const near = (a, b) => assert.ok(Math.abs(a - b) < 1e-9, a + ' !~ ' + b);
+  near(plan.gain, plan.moves.reduce((t, m) => t + m.gain, 0));
+  near(plan.net, plan.gain + plan.longTerm);
+  // the week with the whole plan made is better by the plan's gain, and has nothing worthwhile left
+  near(plan.vm.me.projFinal - vm.me.projFinal, plan.gain);
+  assert.strictEqual(plan.vm.recs.spend, null);
+  // the context it was given is untouched
+  assert.strictEqual(ctx.transactions.filter((t) => t.status === 'PENDING').length, 0);
+  assert.strictEqual(ctx.freeAgents.filter((p) => p.status === 'FREEAGENT' && p.waiverDate).length, 0);
+});
+
+test('planWeek: stops at the weekly limit and at maxMoves, and is empty when nothing is worth it', () => {
+  const ctx = noClaim(withLaterGames(buildCtx()));
+  assert.strictEqual(M.planWeek(ctx, { maxMoves: 1 }).moves.length, 1);
+  assert.strictEqual(M.planWeek(ctx, { maxMoves: 0 }).moves.length, 0);
+  // a weekly limit of 4 with 3 adds already made leaves one
+  const weekly = Object.assign({}, ctx, { league: Object.assign({}, ctx.league, { acq: { limit: 4, perDay: false } }) });
+  const used = M.computeWeek(weekly).adds.used;
+  assert.strictEqual(M.planWeek(weekly).moves.length, Math.max(0, 4 - used));
+  const none = Object.assign({}, ctx, { freeAgents: [] });
+  const empty = M.planWeek(none);
+  assert.deepStrictEqual(empty.moves, []);
+  assert.strictEqual(empty.net, 0);
+});
+
+test('planWeek: a pickup that needs no drop takes the open spot only once', () => {
+  const ctx = noClaim(withLaterGames(buildCtx()));
+  ctx.rosters[6].current = ctx.rosters[6].current.filter((p) => p.id !== 7); // one open roster spot
+  const plan = M.planWeek(ctx);
+  assert.ok(plan.moves.length >= 2);
+  assert.strictEqual(plan.moves.filter((m) => !m.drop).length, 1);
+});
+
+test('computeWeek: a long-term upgrade is suggested even when it adds nothing this week', () => {
+  const setup = (ctx) => {
+    ctx.league = Object.assign({}, ctx.league, { caps: { 0: 1 }, starters: 1 }); // one PG slot: the lineup is full every night
+    ctx.freeAgents = [M.normPlayer({ id: 701, status: 'FREEAGENT', player: rawPlayer(701, 'Slow Burn', 4, PG, seasonStats(2027, { proj: 9.9 })) })];
+    return ctx;
+  };
+  // He never cracks the lineup this week (Ben Five's 10 starts ahead of his 9.9), but over the later
+  // games he is worth more than Bob Eight (8 a game on the same NBA team), who is the cheapest to lose.
+  const vm = M.computeWeek(setup(noClaim(withLaterGames(buildCtx()))));
+  const recs = allRecs(vm).filter((r) => r.fa.id === 701);
+  assert.ok(recs.length > 0);
+  recs.forEach((r) => {
+    assert.ok(Math.abs(r.gain) < 1e-9);
+    assert.ok(r.longTerm > 0.5 && r.worth);
+    assert.strictEqual(r.drop.id, 8);
+  });
+  assert.strictEqual(vm.recs.spend.fa.id, 701);
+  assert.strictEqual(vm.recs.board[0].fa.id, 701);
+  // with no later games there is nothing to gain, so he stays out
+  const flat = M.computeWeek(setup(noClaim(buildCtx())));
+  assert.strictEqual(allRecs(flat).filter((r) => r.fa.id === 701).length, 0);
+  assert.strictEqual(flat.recs.board.filter((b) => b.fa.id === 701).length, 0);
+});
+
+test('computeWeek: a pickup made for the weeks ahead waits until the dropped player has played', () => {
+  const ctx = noClaim(withLaterGames(buildCtx()));
+  ctx.league = Object.assign({}, ctx.league, { caps: { 0: 1 }, starters: 1 }); // one PG slot
+  ctx.rosters[6].current = ctx.rosters[6].current.filter((p) => p.id !== 7 && p.id !== 8); // Ben Five (10) is now the cheapest
+  // Slow Burn (9.9, team 2) plays days 9 and 11 but never starts ahead of Ben Five, who starts both nights.
+  ctx.freeAgents = [M.normPlayer({ id: 702, status: 'FREEAGENT', player: rawPlayer(702, 'Slow Burn', 2, PG, seasonStats(2027, { proj: 9.9 })) })];
+  const vm = M.computeWeek(ctx);
+  const recs = allRecs(vm).filter((r) => r.fa.id === 702);
+  const by = (sp) => recs.find((r) => r.sp === sp);
+  assert.strictEqual(by(9).drop.id, 5);
+  assert.ok(Math.abs(by(9).gain + 0.2) < 1e-9, 'tonight it costs the two starts of Ben Five, a tenth each');
+  assert.ok(Math.abs(by(11).gain + 0.1) < 1e-9);
+  assert.ok(Math.abs(by(13).gain) < 1e-9, 'on the last day of the week it costs nothing');
+  assert.strictEqual(by(10), undefined, 'no game and not the last day: no reason to move then');
+  assert.strictEqual(vm.recs.spend.sp, 13);
+  assert.strictEqual(vm.recs.board.find((b) => b.fa.id === 702).bestSp, 13);
+});
+
+/* ------------------------------------------------------- coming off IR */
+
+// Ira Six (id 6): PG, 25 a game, pro team 2 (plays days 9 and 11), parked in the IR slot.
+const iraOf = (ctx) => ctx.rosters[6].current.find((p) => p.id === 6);
+
+test('computeWeek: a player on IR who can play again is offered as an activation', () => {
+  const ctx = noClaim(buildCtx());
+  iraOf(ctx).injury = 'ACTIVE';
+  const vm = M.computeWeek(ctx);
+  const today = allRecs(vm).find((r) => r.activate && r.sp === 9);
+  assert.ok(today);
+  assert.strictEqual(today.fa.id, 6);
+  assert.strictEqual(today.waiver, false);
+  assert.ok(Math.abs(today.gain - 50) < 1e-9, 'he fills an open slot tonight and on day 11');
+  // The roster is full, but Cal Two (out) can take the IR slot he leaves: a swap, nobody dropped.
+  assert.strictEqual(today.drop, null);
+  assert.strictEqual(today.irMove.id, 2);
+  assert.ok(vm.recs.board.every((b) => b.fa.id !== 6), 'the streaming board lists free agents only');
+  // with nobody to swap in, someone has to go
+  const tight = noClaim(buildCtx());
+  iraOf(tight).injury = 'ACTIVE';
+  tight.rosters[6].current.find((p) => p.id === 2).injury = 'DAY_TO_DAY';
+  const act = allRecs(M.computeWeek(tight)).filter((r) => r.activate);
+  assert.ok(act.length > 0 && act.every((r) => r.drop && !r.irMove));
+});
+
+test('computeWeek: an out player on IR is activated from his expected return, or not at all', () => {
+  const ctx = noClaim(buildCtx());
+  assert.strictEqual(allRecs(M.computeWeek(ctx)).filter((r) => r.activate).length, 0, 'out with no return date');
+  iraOf(ctx).back = { sp: 11, date: '2026-10-30', season: false };
+  const act = allRecs(M.computeWeek(ctx)).filter((r) => r.activate);
+  assert.deepStrictEqual([...new Set(act.map((r) => r.sp))], [11]);
+  assert.ok(Math.abs(act[0].gain - 25 * M.BACK_PLAY) < 1e-9);
+  iraOf(ctx).back = { sp: Infinity, date: null, season: true };
+  assert.strictEqual(allRecs(M.computeWeek(ctx)).filter((r) => r.activate).length, 0);
+});
+
+test('computeWeek: with no adds left, coming off IR is still possible', () => {
+  const ctx = noClaim(buildCtx());
+  iraOf(ctx).injury = 'ACTIVE';
+  ctx.league = Object.assign({}, ctx.league, { acq: { limit: 2, perDay: false } }); // 2 a week, both made
+  const vm = M.computeWeek(ctx);
+  assert.strictEqual(vm.adds.left, 0);
+  assert.match(vm.recs.note, /used all 2 adds/);
+  const all = allRecs(vm);
+  assert.ok(all.length > 0 && all.every((r) => r.activate));
+  assert.deepStrictEqual(vm.recs.board, []);
+});
+
+test('planWeek: an activation is a step of the plan, spends no add and is made once', () => {
+  const ctx = noClaim(buildCtx());
+  iraOf(ctx).injury = 'ACTIVE';
+  const vm = M.computeWeek(ctx);
+  const plan = M.planWeek(ctx, { vm });
+  const steps = plan.moves.filter((m) => m.activate);
+  assert.strictEqual(steps.length, 1);
+  assert.strictEqual(steps[0].fa.id, 6);
+  const picked = plan.moves.filter((m) => !m.activate);
+  assert.ok(picked.length >= 1, 'the fixture still has a pickup worth making');
+  assert.strictEqual(plan.vm.adds.left, vm.adds.left - picked.length);
+  const drops = plan.moves.filter((m) => m.drop).map((m) => m.drop.id);
+  assert.strictEqual(new Set(drops).size, drops.length);
+  assert.ok(!drops.includes(6) && !drops.includes(2), 'neither the player coming back nor the one who took his IR slot is dropped');
+  assert.ok(Math.abs(plan.vm.me.projFinal - vm.me.projFinal - plan.gain) < 1e-9);
+  assert.strictEqual(ctx.activations, undefined, 'the context it was given is untouched');
 });

@@ -8,13 +8,14 @@
 
    It answers four questions:
      1. Projections: how far off is the per-game number, and which recipe is closest?
-     2. Next 3 weeks: do real games and opponents beat an average schedule?
+     2. Next 3 weeks: do real games and opponents beat an average schedule, and does allowing for missed games help?
      3. Win chance: when the app says 70%, do you win 70% of the time?
      4. Add suggestions: does following them score more than standing still?
 
    Your real leagues did not exist in those seasons and ESPN keeps no past free-agent pools or daily injury
    lists, so 3 and 4 run on simulated leagues: rosters drafted from ESPN's preseason projections, the other teams
    stand still, nobody competes for free agents, and a player counts as out after missing his team's last 2 games.
+   Adds are capped at 7 a week, on any day, as in ESPN's "1 per scoring period" setting.
    Fantasy points use ESPN's default points scoring. Data is cached in .cache/. */
 'use strict';
 
@@ -35,12 +36,13 @@ const MIN_GP = 20, MIN_GP_CURRENT = 5, MIN_AVG = 15, OPP_SHRINK = 150, CURRENT_S
 const FLAT_GAMES_PER_WEEK = 82 / 24;
 const LINEUP = { 0: 1, 1: 1, 2: 1, 3: 1, 4: 1, 5: 1, 6: 1, 11: 3 }; // NBA Ngola's starting slots
 const BENCH = 3;
-const POLICIES = ['this-week', 'spend', 'every-worth'];
+const POLICIES = ['this-week', 'spend', 'every-worth', 'plan'];
 const POLICY_LABEL = {
   none: 'Never add anyone',
   'this-week': 'Best add every night, this week only',
-  spend: 'Only "Spend your add here" (the app)',
+  spend: 'Only "Spend your add here"',
   'every-worth': 'Every night the top add is worth it',
+  plan: 'The week plan, remade every morning (the app)',
 };
 
 /* ---------------------------------------------------------------- loading */
@@ -215,11 +217,11 @@ function makeData(season, schedRaw, pool, logs, prev) {
   const players = new Map();
   pool.forEach((p, i) => {
     const games = (logs[i] || []).filter((g) => sched.games[g.id])
-      .map((g) => ({ sp: sched.games[g.id].sp, gid: g.id, team: g.team, opp: g.opp, home: g.home, fp: fantasyPoints(g.stats) }))
+      .map((g) => ({ sp: sched.games[g.id].sp, gid: g.id, team: g.team, opp: g.opp, home: g.home, fp: fantasyPoints(g.stats), min: parseFloat(g.stats[0]) || 0 }))
       .sort((a, b) => a.sp - b.sp);
-    const cum = [0];
-    games.forEach((g) => cum.push(cum[cum.length - 1] + g.fp));
-    players.set(p.id, Object.assign({}, p, { games, sps: games.map((g) => g.sp), cum, bySp: new Map(games.map((g) => [g.sp, g])) }));
+    const cum = [0], cumMin = [0];
+    games.forEach((g) => { cum.push(cum[cum.length - 1] + g.fp); cumMin.push(cumMin[cumMin.length - 1] + g.min); });
+    players.set(p.id, Object.assign({}, p, { games, sps: games.map((g) => g.sp), cum, cumMin, bySp: new Map(games.map((g) => [g.sp, g])) }));
   });
   const lastSp = Math.max(...Object.keys(sched.gamesBySp).map(Number));
   const teamDays = {};
@@ -236,11 +238,11 @@ function playerAt(data, pid, sp, opts) {
   const S = data.season;
   const n = below(p.sps, sp);
   const stats = [{ id: '10' + S, statSourceId: 1, statSplitTypeId: 0, scoringPeriodId: 0, appliedAverage: p.proj, appliedTotal: p.proj * (p.projGp || 1), stats: { 42: p.projGp || 1 } }];
-  if (n) {
-    stats.push({ id: '00' + S, statSourceId: 0, statSplitTypeId: 0, scoringPeriodId: 0, appliedTotal: p.cum[n], appliedAverage: p.cum[n] / n, stats: { 42: n } });
-    const from = below(p.sps, sp - 15), m = n - from;
-    if (m) stats.push({ id: '02' + S, statSourceId: 0, statSplitTypeId: 2, scoringPeriodId: 0, appliedTotal: p.cum[n] - p.cum[from], appliedAverage: (p.cum[n] - p.cum[from]) / m, stats: { 42: m } });
-  }
+  // season so far, last 15 days and last 30 days, as ESPN's splits give them: points, minutes, games
+  [['00', 0, Infinity], ['02', 2, 15], ['03', 3, 30]].forEach(([id, type, days]) => {
+    const from = below(p.sps, sp - days), m = n - from;
+    if (m) stats.push({ id: id + S, statSourceId: 0, statSplitTypeId: type, scoringPeriodId: 0, appliedTotal: p.cum[n] - p.cum[from], appliedAverage: (p.cum[n] - p.cum[from]) / m, stats: { 40: p.cumMin[n] - p.cumMin[from], 42: m } });
+  });
   if (opts.gamesFrom != null) {
     for (let i = below(p.sps, opts.gamesFrom); i < n; i++) {
       const g = p.games[i];
@@ -298,6 +300,23 @@ const mae = (s) => s.ae / s.n;
 const rmse = (s) => Math.sqrt(s.se / s.n);
 const bias = (s) => s.e / s.n;
 
+// The app's recipe, written out a second time so a change in web/model.js cannot slip by unnoticed.
+// o: prior = games ESPN's projection is worth, r15 / r30 = extra weight on the last 15 / 30 days, minutes = minutes trend.
+function recipe(p, sp, o) {
+  const n = below(p.sps, sp);
+  if (!n) return p.proj;
+  const win = (days) => { const f = below(p.sps, sp - days); return { n: n - f, fp: p.cum[n] - p.cum[f], min: p.cumMin[n] - p.cumMin[f] }; };
+  const w15 = win(15), w30 = win(30);
+  let v = (p.cum[n] + o.r30 * w30.fp + o.r15 * w15.fp + o.prior * p.proj) / (n + o.r30 * w30.n + o.r15 * w15.n + o.prior);
+  if (o.minutes && n >= 5 && w15.min > 0 && p.cumMin[n] > 0) {
+    v *= 1 + Math.max(-0.5, Math.min(0.5, o.minutes * (w15.n / (w15.n + 3)) * ((w15.min / w15.n) / (p.cumMin[n] / n) - 1)));
+  }
+  return v;
+}
+const EQUAL = { prior: 10, r15: 0, r30: 0, minutes: 0 };
+const RECENT = { prior: 10, r15: 1, r30: 1, minutes: 0 };
+const APP = { prior: 10, r15: 1, r30: 1, minutes: 0.5 };
+
 function testProjections(data) {
   const S = data.season;
   const games = [];
@@ -309,19 +328,19 @@ function testProjections(data) {
   games.forEach(({ pid, g }) => {
     const p = data.players.get(pid), sp = g.sp, n = below(p.sps, sp);
     const cur = n ? p.cum[n] / n : null;
-    const blend = (k) => (n ? (n / (n + k)) * cur + (k / (n + k)) * p.proj : p.proj);
+    const equal = (k) => recipe(p, sp, Object.assign({}, EQUAL, { prior: k }));
     const from = below(p.sps, sp - 15);
     const l15 = n - from >= 3 ? (p.cum[n] - p.cum[from]) / (n - from) : null;
     const app = M.projectPlayer(playerAt(data, pid, sp), S, true).fp;
-    if (Math.abs(app - blend(10)) > 1e-6) throw new Error('Backtest recipe and web/model.js disagree for ' + p.name);
+    if (Math.abs(app - recipe(p, sp, APP)) > 1e-6) throw new Error('Backtest recipe and web/model.js disagree for ' + p.name);
     addStat(R('ESPN preseason only'), p.proj, g.fp);
     addStat(R('Season average only'), n ? cur : p.proj, g.fp);
-    addStat(R('ESPN worth 20 games'), blend(20), g.fp);
-    addStat(R('ESPN worth 10 games (the app)'), app, g.fp);
-    addStat(R('ESPN worth 5 games'), blend(5), g.fp);
-    addStat(R('ESPN worth 3 games'), blend(3), g.fp);
-    addStat(R('Last 15 days'), l15 != null ? l15 : app, g.fp);
-    addStat(R('Half the app, half last 15 days'), l15 != null ? (app + l15) / 2 : app, g.fp);
+    addStat(R('Last 15 days only'), l15 != null ? l15 : equal(10), g.fp);
+    addStat(R('Every game the same, ESPN worth 20'), equal(20), g.fp);
+    addStat(R('Every game the same, ESPN worth 10'), equal(10), g.fp);
+    addStat(R('Every game the same, ESPN worth 5'), equal(5), g.fp);
+    addStat(R('Recent games count more'), recipe(p, sp, RECENT), g.fp);
+    addStat(R('Recent games and minutes (the app)'), app, g.fp);
     const mult = (F) => { const m = M.gameMult(data.sched, F, g.team, sp); return m.mult / m.play; }; // played games only: chance of playing is not part of this test
     addStat(A('No adjustment'), app, g.fp);
     addStat(A('Venue and back-to-backs'), app * mult(Object.assign({}, data.prev, { opp: {} })), g.fp);
@@ -335,8 +354,8 @@ function testProjections(data) {
 
 function testWindows(data, seed) {
   const S = data.season, rng = mulberry32(seed || 7);
-  const flat = newStat(), real = newStat();
-  const pairs = { flat: 0, real: 0, n: 0 };
+  const flat = newStat(), real = newStat(), app = newStat();
+  const pairs = { flat: 0, real: 0, app: 0, n: 0 };
   for (let cp = 21; cp < data.lastSp - 28; cp += 7) {
     const frm = cp + 7, to = cp + 27, F = factorsAt(data, cp);
     const rows = [];
@@ -349,9 +368,11 @@ function testWindows(data, seed) {
       for (let sp = frm; sp <= to; sp++) if (M.teamGame(data.sched, P.proTeamId, sp)) sched += fp * M.gameMult(data.sched, F, P.proTeamId, sp).mult;
       const actual = p.cum[below(p.sps, to + 1)] - p.cum[below(p.sps, frm)];
       const fl = fp * FLAT_GAMES_PER_WEEK * 3;
+      const allowed = sched * M.availability(P, S, M.teamGamesBefore(data.sched, P.proTeamId, cp)); // as the app's long-term value
       addStat(flat, fl, actual);
       addStat(real, sched, actual);
-      rows.push([fl, sched, actual]);
+      addStat(app, allowed, actual);
+      rows.push([fl, sched, actual, allowed]);
     });
     shuffle(rows, rng);
     for (let i = 0; i + 1 < rows.length; i += 2) {
@@ -360,9 +381,10 @@ function testWindows(data, seed) {
       pairs.n++;
       if ((a[0] - b[0]) * (a[2] - b[2]) > 0) pairs.flat++;
       if ((a[1] - b[1]) * (a[2] - b[2]) > 0) pairs.real++;
+      if ((a[3] - b[3]) * (a[2] - b[2]) > 0) pairs.app++;
     }
   }
-  return { flat, real, pairs };
+  return { flat, real, app, pairs };
 }
 
 /* ------------------------------------------------- 3 and 4. simulated leagues */
@@ -454,11 +476,13 @@ function winChance(data, league, week, a, b, drafted, slots, sp, F, opts) {
   return I.winProbability(vm, { factors: F, sims: opts.sims, seed: sp * 1000 + a }).pWin;
 }
 
-function pickMove(policy, vm, sp) {
+// Today's moves under a policy. Only the week plan ever makes more than one a day.
+function pickMoves(policy, vm, sp, ctx) {
   const top = vm.recs.byDay[sp] && vm.recs.byDay[sp][0];
-  if (policy === 'this-week') return top || null;
-  if (policy === 'every-worth') return top && top.worth ? top : null;
-  return vm.recs.spend && vm.recs.spend.sp === sp ? vm.recs.spend : null;
+  if (policy === 'this-week') return top ? [top] : [];
+  if (policy === 'every-worth') return top && top.worth ? [top] : [];
+  if (policy === 'plan') return M.planWeek(ctx, { vm }).moves.filter((m) => m.sp === sp);
+  return vm.recs.spend && vm.recs.spend.sp === sp ? [vm.recs.spend] : [];
 }
 
 function runPolicy(data, league, policy, teamId, drafted, schedule, control) {
@@ -467,19 +491,21 @@ function runPolicy(data, league, policy, teamId, drafted, schedule, control) {
   drafted.forEach((r, i) => { if (i !== teamId - 1) r.forEach((pid) => others.add(pid)); });
   const out = { points: 0, weeks: 0, wins: 0, adds: 0 };
   data.weeks.forEach((week, wi) => {
-    let total = 0;
+    let total = 0, usedThisWeek = 0;
     week.sps.forEach((sp) => {
       const F = factorsAt(data, sp);
       const freeAgents = [];
       data.players.forEach((p, pid) => { if (!others.has(pid) && roster.indexOf(pid) < 0) freeAgents.push(cachedPlayer(data, pid, sp)); });
-      const ctx = { league: Object.assign({}, league, { currentSp: sp, currentMp: week.id }), sched: data.sched, week, now: morningOf(data, sp), myTeamId: teamId,
+      // the adds already made this week count against the weekly limit, as ESPN's own counter does
+      const teams = Object.assign({}, league.teams, { [teamId]: Object.assign({}, league.teams[teamId], { addsByMp: { [week.id]: usedThisWeek } }) });
+      const ctx = { league: Object.assign({}, league, { currentSp: sp, currentMp: week.id, teams }), sched: data.sched, week, now: morningOf(data, sp), myTeamId: teamId,
         rosters: { [teamId]: { current: roster.map((pid) => cachedPlayer(data, pid, sp)), bySp: {} } }, freeAgents, transactions: [], factors: F };
       if (policy === 'this-week') ctx.longTermWeeks = 0;
-      const rec = pickMove(policy, M.computeWeek(ctx), sp);
-      if (rec) {
+      pickMoves(policy, M.computeWeek(ctx), sp, ctx).forEach((rec) => {
         roster = roster.filter((pid) => !rec.drop || pid !== rec.drop.id).concat([rec.fa.id]);
         out.adds++;
-      }
+        usedThisWeek++;
+      });
       total += scoreLineup(data, lineupFor(data, league, roster, sp, F), sp);
     });
     const pair = schedule[wi].find((x) => x.indexOf(teamId) >= 0);
@@ -612,9 +638,10 @@ async function main(argv) {
     printStats('Adjustments for each game, on the app\'s recipe', a.adjust);
     const w = testWindows(data);
     console.log('\nNext 3 weeks, predicted from a week before they start (' + w.flat.n + ' player windows)');
-    console.log('  Average schedule   off by ' + mae(w.flat).toFixed(1) + ' points   bias ' + sgn(bias(w.flat)));
-    console.log('  Real games (app)   off by ' + mae(w.real).toFixed(1) + ' points   bias ' + sgn(bias(w.real)));
-    console.log('  Picks the better of two players: average schedule ' + pct(w.pairs.flat / w.pairs.n) + ', real games ' + pct(w.pairs.real / w.pairs.n) + ' (' + w.pairs.n + ' pairs)');
+    console.log('  Average schedule                           off by ' + mae(w.flat).toFixed(1) + ' points   bias ' + sgn(bias(w.flat)));
+    console.log('  Real games                                 off by ' + mae(w.real).toFixed(1) + ' points   bias ' + sgn(bias(w.real)));
+    console.log('  Real games, missed games allowed (the app) off by ' + mae(w.app).toFixed(1) + ' points   bias ' + sgn(bias(w.app)));
+    console.log('  Picks the better of two players: average schedule ' + pct(w.pairs.flat / w.pairs.n) + ', real games ' + pct(w.pairs.real / w.pairs.n) + ', the app ' + pct(w.pairs.app / w.pairs.n) + ' (' + w.pairs.n + ' pairs)');
     for (const teams of o.teams) {
       const calibration = [], results = [];
       for (let seed = 1; seed <= o.leagues; seed++) {
@@ -630,7 +657,7 @@ async function main(argv) {
       const s = summarizePolicies(results, POLICIES);
       ['none'].concat(POLICIES).forEach((p) => {
         const x = s[p];
-        console.log('  ' + POLICY_LABEL[p].padEnd(40) + x.pts.toFixed(1).padStart(8) + ' pts  ' + pct(x.win).padStart(6) + ' wins  ' + x.adds.toFixed(2).padStart(5) + ' adds/wk' +
+        console.log('  ' + POLICY_LABEL[p].padEnd(46) + x.pts.toFixed(1).padStart(8) + ' pts  ' + pct(x.win).padStart(6) + ' wins  ' + x.adds.toFixed(2).padStart(5) + ' adds/wk' +
           (p === 'none' ? '' : '   ' + sgn(x.dPts.m) + ' pts (±' + x.dPts.half.toFixed(1) + ')  ' + sgn(100 * x.dWin.m) + ' win pts (±' + (100 * x.dWin.half).toFixed(1) + ')'));
       });
     }

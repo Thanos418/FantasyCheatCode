@@ -77,7 +77,9 @@ Starting slots = everything except 12, 13 (here 10 starters, 3 bench, 1 IR).
 
 ### Add limit
 `settings.acquisitionSettings`: `matchupAcquisitionLimit` (1; -1 = unlimited),
-`matchupLimitPerScoringPeriod` (true ⇒ limit is **per day**, so 7/week).
+`matchupLimitPerScoringPeriod` (true ⇒ the limit is counted per day of the matchup, so 1 ⇒ 7 for a 7-day week).
+Checked on both leagues, Nov 10 2026: it is a budget for the whole matchup, not one a day. 32 of 106
+team-days had 2 or more adds (up to 4), three teams hit exactly 7 in a week and nobody went above.
 Weekly used count: `team.transactionCounter.matchupAcquisitionTotals[mpId]`.
 Per-day used: count my EXECUTED FREEAGENT/WAIVER transactions with an ADD item, by `scoringPeriodId`.
 
@@ -178,12 +180,16 @@ Accepts a roster entry (`{lineupSlotId, injuryStatus, playerPoolEntry:{player}}`
 
 ### `projectPlayer(player, season, isPoints=true) → Proj`
 ```
-cur = '00'+season, proj = '10'+season, prev = '00'+(season-1), l15 = '02'+season
+cur = '00'+season, proj = '10'+season, prev = '00'+(season-1), l15 = '02'+season, l30 = '03'+season (else l15)
 avg(e) = e.appliedAverage || (e.stats[42] ? e.appliedTotal / e.stats[42] : null)
 n = cur.stats[42] || 0; curAvg = n ? avg(cur) : null; prior = avg(proj) ?? avg(prev)
-fp = prior == null ? (curAvg ?? avg(l15) ?? 0) : curAvg == null ? prior : (n/(n+10))*curAvg + (10/(n+10))*prior
-→ { fp, curAvg, n, prior, espnProj: avg(proj), l15: avg(l15), l15n, prevAvg }
+n15 = min(gp(l15), n); n30 = min(gp(l30), n)
+fp = prior == null ? (curAvg ?? avg(l15) ?? 0) : curAvg == null ? prior
+   : (n*curAvg + n30*avg(l30) + n15*avg(l15) + 10*prior) / (n + n30 + n15 + 10)
+minutes (n >= 5, both splits carry stats[40]): fp *= 1 + clamp(0.5 * n15/(n15+3) * (mpg(l15)/mpg(cur) - 1), ±0.5)
+→ { fp, curAvg, n, prior, espnProj: avg(proj), l15: avg(l15), l15n, prevAvg, mpg, mpgL15, minTrend }
 ```
+Weights fitted on 2025-26 and checked on 2024-25 (tools/backtest.js); see Phase 3 at the end.
 Non-points leagues: `fp = 1` for everyone (so "value" = games that reach the lineup).
 
 ### `bestLineup(cands, caps) → { chosen: cand[], total, slotOf: Map(candKey → slotId) }`
@@ -239,7 +245,8 @@ Recommendations (my team only, only for days `kind !== 'past'`):
 - `V(R, day)` = `bestLineup(...).total` for roster R on that day (today: unstarted games only, caps reduced by players already counted).
 - Drop candidates = the 4 lowest `proj.fp` players on the current roster with slot ≠ 13.
 - FA pool = free agents not OUT with ≥1 unstarted game in remaining days; take the top 80 by `fp × gamesLeft`.
-- A waiver player is available from `dateSp(etDate(waiverDate))` on. If `acq.perDay` and today's adds are used up, skip today.
+- A waiver player is available from `dateSp(etDate(waiverDate))` on. Adds are only limited by the week's budget
+  (`adds.left = weekLimit − used − pending claims`); see Phase 3.
 - For each FA f and drop r: `delta[day] = V(R − r + f, day) − V(R, day)` for remaining days; gain from day d = suffix sum from d.
   Candidate for day d only if f has an unstarted game on d and is available on d. Keep the best r per (f, d).
 - `byDay[sp]` = top 3 by gain (only gain > 0.5). `board` = per FA, its best (d, r), sorted by gain, top 25.
@@ -319,7 +326,7 @@ grid may scroll horizontally inside its own container):
    our proj, % rostered, per-game box lines this week).
 5. **Streaming board** — top free agents: name/team/pos, % rostered (Δ), proj FP/g, games left as day pips
    (start vs squeezed), best drop, gain. Position filter.
-6. Adds line: "2 adds used this week · limit 1 per day" + pending claims.
+6. Adds line: "2 of 7 adds used this week · 5 left · any day" + pending claims.
 
 Headshot: `https://a.espncdn.com/i/headshots/nba/players/full/<id>.png` (lazy; hide on error, show initials).
 
@@ -463,3 +470,77 @@ clear message on ESPN 401 or missing config. Never prints the cookies.
   sides and any forced drop; below, "Trade ideas" (click one to load it into the analyzer).
 - League: power rankings table (rank, team, record, points for, strength per week, schedule strength),
   my team highlighted.
+
+
+---
+
+# Phase 3 — projections, injuries and the week plan (Nov 9 2026)
+
+Everything here was fitted on 2025-26 and checked on 2024-25 with `tools/backtest.js`, except the return
+dates, which ESPN does not keep for past seasons.
+
+## web/model.js additions
+
+- `projectPlayer`: recency weights and minutes trend as in the block above. Constants `PRIOR_GAMES 10`,
+  `RECENT_15 1`, `RECENT_30 1`, `MIN_TREND 0.5`, `MIN_TREND_SHRINK 3`, `MIN_TREND_GP 5`.
+- `availability(player, season, teamGames)` = `(n + 10*0.85) / (max(teamGames, n) + 10)`: the share of his
+  team's games a player is expected to play over the coming weeks. `teamGamesBefore(sched, proId, sp)`.
+- `normInjuries(raw)` → `{ [playerId]: { status, returnDate 'YYYY-MM-DD'|null, season (out for the season),
+  type, note, updated } }` from ESPN's public injury report
+  (`site.api.espn.com/apis/site/v2/sports/basketball/nba/injuries`; the player id is in `athlete.links[].href`).
+- `applyInjuries(players, report, sched, currentSp)` sets `p.news = { type, note, status }` and, when the
+  report has a date, `p.back = { sp, date, season }` (`sp = Infinity` when out for the season; never before
+  `currentSp + 1` for a player who is out today). Listed without a date ⇒ no `p.back`.
+- `outOn(p, sp)` = out now and not expected back by `sp`. computeWeek uses it everywhere it used `isOut`:
+  a returning player is a lineup candidate from `p.back.sp`, his cells carry `back: true` and his expected
+  points are multiplied by `BACK_PLAY` (0.75). An out free agent is only suggested from that day.
+- Long-term value of a move: games from the expected return on, times `availability` (points leagues).
+- `recs.byDay[sp]` keeps moves with `gain > 0.5` **or** `worth` (net > 0.5), so a long-term upgrade that
+  adds nothing this week is suggested. The board follows the same rule.
+- A pending pickup with no drop counts towards the roster size (`joining`).
+- `planWeek(ctx, { vm?, maxMoves = 7 })` → `{ moves, gain, longTerm, net, vm }`. Loop: take `vm.recs.spend`,
+  add it to the context as a pending pickup on its day (synthetic PENDING transaction, the free agent's
+  `waiverDate` set to noon ET that day, an `irMove` player moved to slot 13), recompute. `moves` are sorted
+  by day and each carries `step` (order chosen) and `alts` (the other suggestions for that night at that
+  step). `vm` is the week with the whole plan made. Each planned pickup holds one of the week's adds
+  (`adds.left`), so the plan stops on its own when they run out. Several moves can share a day.
+- Add budget: `adds.left = weekLimit − used − pending claims` (null when unlimited). `left === 0` ⇒ a note
+  and no pickups, but activations are still looked at. There is no per-day block.
+- Timing of a free-agent pickup: a night he plays, or the last day of the week (a pickup made for the
+  weeks ahead can wait until the dropped player has played). A waiver claim: the day waivers clear.
+- Activations: a player in an IR slot who is not out, or is expected back this week, is a candidate like
+  a pickup (`rec.activate = true`), from the first day he can play. Options: the usual drops, or no drop
+  when a spot is open or an Out player can swap into the IR slot he leaves (`rec.irMove`). Not on the
+  board, spends no add. planWeek applies one through `ctx.activations = [{ playerId, dropId, sp }]`.
+
+## web/insights.js additions
+
+- `simTeam`: a `back` cell's chance of playing (`BACK_PLAY`) is already in its points, like a back-to-back.
+- `makeRun.ent`: `w = fp * availability` is what a game is worth (points leagues, unless
+  `args.availability === false`); `first` = first day of the run he can play (`p.back.sp - from` for an
+  out player with a return date, never for an out player without one or a healthy player parked on IR).
+- `digest({ …, plan? })`: with a plan, today's line is the plan's move ("In your plan today: …") or what
+  is left after the plan, and a last line lists the plan. `backText(p)` → ", back around Nov 24".
+
+## web/espn.js, server.py
+
+- `client.loadInjuries()` → normalised report; never throws (empty on any failure). loadWeek and
+  loadLeague call `applyInjuries` on every current roster and on the free agents.
+- Free agents are asked for the `03` (last 30 days) split too; the stat ids follow `opts.season`.
+- `GET /injuries` on the local server proxies the public report with a 15 minute cache and no cookies.
+- Demo mode answers `injuries` with a small report for its hurt players.
+
+## UI
+
+- Scoreboard: win chance as a half dial between the scores, team records, "N% with your plan".
+- "Your plan" section under the scoreboard: one row per move (day, pickup, drop, this week / next 3 weeks
+  / total) and a card with the totals and the projected finish.
+- Nights: played nights are compact tiles; night cards show the plan's moves ("In your plan"), a note
+  for a real pending claim ("Claim day") and "Hold" with the this-week-only options folded.
+- A waiver claim says when to enter it: "Enter this claim now, before Tue 08:00 WET. ESPN processes it
+  then…" (`claimNoteHTML`, from `fa.waiverDate` in the viewer's time zone). The plan row shows the day
+  the player joins.
+- Injury chips carry the expected return; the row detail shows ESPN's note, minutes and the minutes trend.
+- The view is in the address (`#trades`); the tabs stay at the top while scrolling; a button cycles the
+  theme (system, light, dark; `wp:theme` in localStorage, `data-theme` on `<html>`).
+- Section titles use the display face in capitals; a new week or view plays a short entrance once.

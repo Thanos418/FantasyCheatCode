@@ -53,7 +53,13 @@ test('playerAt knows nothing from that day onwards and matches the app formula',
   assert.strictEqual(cur(at3).appliedAverage, 10);
   assert.strictEqual(cur(at6).appliedAverage, 20);
   assert.strictEqual(cur(B.playerAt(d, 1, 1)), undefined);
-  assert.ok(Math.abs(M.projectPlayer(at6, 2026, true).fp - ((3 / 13) * 20 + (10 / 13) * 30)) < 1e-9);
+  // 3 games, all inside the last 15 days, so each counts three times against ESPN's 10: (3 x 60 + 300) / 19
+  assert.ok(Math.abs(M.projectPlayer(at6, 2026, true).fp - 480 / 19) < 1e-9);
+  assert.strictEqual(cur(at6).stats[40], 90, 'minutes travel with the split');
+  const at40 = B.playerAt(d, 1, 40);
+  assert.strictEqual(at40.stats.find((s) => s.id === '022026'), undefined, 'no games in the last 15 days');
+  assert.strictEqual(at40.stats.find((s) => s.id === '032026'), undefined, 'none in the last 30 days either');
+  assert.strictEqual(B.playerAt(d, 1, 30).stats.find((s) => s.id === '032026').stats[42], 3);
   assert.strictEqual(M.gameStat(B.playerAt(d, 1, 6, { gamesFrom: 3 }), 3).appliedTotal, 20);
   assert.strictEqual(M.gameStat(B.playerAt(d, 1, 6, { gamesFrom: 3 }), 1), null);
 });
@@ -124,10 +130,11 @@ test('testProjections runs the app formula and testWindows compares schedules', 
   const d = league(70, 24);
   const r = B.testProjections(d);
   assert.ok(r.games > 1000);
-  assert.ok(r.recipes['ESPN worth 10 games (the app)'].n === r.games);
+  assert.ok(r.recipes['Recent games and minutes (the app)'].n === r.games);
   assert.ok(r.adjust['Plus this season\'s defenses (the app)'].n === r.games);
   const w = B.testWindows(d, 1);
-  assert.ok(w.flat.n > 0 && w.flat.n === w.real.n);
+  assert.ok(w.flat.n > 0 && w.flat.n === w.real.n && w.app.n === w.real.n);
+  assert.ok(w.app.e < w.real.e, 'allowing for missed games lowers the total');
   assert.ok(w.pairs.n > 0);
 });
 

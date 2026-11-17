@@ -6,7 +6,9 @@
   const DIRECT_BASE = 'https://lm-api-reads.fantasy.espn.com/apis/v3/games/fba/';
   const PROBE_TTL_MS = 7 * 24 * 3600 * 1000;
   const MAX_INFLIGHT = 6;
-  const FA_STATS = ['002027', '102027', '012027', '022027', '002026'];
+  const INJURY_URL = 'https://site.api.espn.com/apis/site/v2/sports/basketball/nba/injuries';
+  // Stat splits asked for with free agents: season, ESPN's projection, last 7 / 15 / 30 days, last season.
+  const faStats = (season) => ['00', '10', '01', '02', '03'].map((k) => k + season).concat(['00' + (season - 1)]);
   const COOKIE_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36';
 
   function buildQuery(views, params) {
@@ -134,10 +136,23 @@
           filterSlotIds: { value: [0, 1, 2, 3, 4, 5, 6, 11] },
           sortPercOwned: { sortPriority: 1, sortAsc: false },
           limit: 250,
-          filterStatsForTopScoringPeriodIds: { value: 5, additionalValue: FA_STATS },
+          filterStatsForTopScoringPeriodIds: { value: 5, additionalValue: faStats(+opts.season) },
         },
       },
     });
+
+    // ESPN's public injury report, for expected return dates. The app works without it: any failure
+    // gives an empty report. It needs no cookies, so none are sent.
+    async function loadInjuries() {
+      try {
+        if (mode === 'demo') return M().normInjuries(await root.WPDemo.respond('injuries', {}));
+        const direct = mode === 'direct';
+        const res = await doFetch(direct ? INJURY_URL : '/injuries', direct && opts.cookie ? { headers: { Accept: 'application/json', 'User-Agent': COOKIE_UA } } : undefined);
+        return res.ok ? M().normInjuries(await res.json()) : {};
+      } catch (e) {
+        return {};
+      }
+    }
 
     async function loadWeek(base, week) {
       const m = M();
@@ -153,10 +168,11 @@
       const rosterAt = (sp) => get(L, { views: ['mRoster'], params: { scoringPeriodId: sp, rosterForTeamId: teamIds }, ttl: sp < cur ? 3600 : 60 });
       const wantFa = week.last >= cur;
 
-      const [rawBySp, faRaw, txRaw] = await Promise.all([
+      const [rawBySp, faRaw, txRaw, injuries] = await Promise.all([
         Promise.all(spsToLoad.map(rosterAt)),
         wantFa ? freeAgentsRaw(cur) : null,
         wantFa ? get(L, { views: ['mTransactions2'], params: { scoringPeriodId: cur }, ttl: 60 }) : null,
+        wantFa ? loadInjuries() : {},
       ]);
 
       const rosters = {};
@@ -172,12 +188,15 @@
       });
 
       const demo = mode === 'demo';
+      const freeAgents = faRaw ? (faRaw.players || []).map((e) => m.normPlayer(e)) : [];
+      teamIds.forEach((id) => m.applyInjuries(rosters[id].current, injuries, base.sched, cur));
+      m.applyInjuries(freeAgents, injuries, base.sched, cur);
       return {
         league, sched: base.sched, week, myTeamId,
         now: demo ? root.WPDemo.now : Date.now(),
         factors: root.WPFactors || null,
         rosters,
-        freeAgents: faRaw ? (faRaw.players || []).map((e) => m.normPlayer(e)) : [],
+        freeAgents,
         transactions: txRaw ? txRaw.transactions || [] : [],
       };
     }
@@ -186,26 +205,28 @@
     async function loadLeague(base) {
       const m = M();
       const cur = base.league.currentSp;
-      const [rosterRaw, schedRaw, faRaw] = await Promise.all([
+      const [rosterRaw, schedRaw, faRaw, injuries] = await Promise.all([
         get(L, { views: ['mRoster'], params: { scoringPeriodId: cur }, ttl: 300 }),
         get(L, { views: ['mMatchup'], ttl: 300 }),
         freeAgentsRaw(cur),
+        loadInjuries(),
       ]);
       const rosters = {};
       (rosterRaw.teams || []).forEach((t) => {
         if (!t.roster) return;
         rosters[t.id] = (t.roster.entries || []).map((e) => { const p = m.normPlayer(e); p.onTeamId = t.id; return p; });
+        m.applyInjuries(rosters[t.id], injuries, base.sched, cur);
       });
       return {
         rosters,
         matchups: m.normLeague({}, schedRaw).matchups, // same normalisation as league.matchups
-        freeAgents: (faRaw.players || []).map((e) => m.normPlayer(e)),
+        freeAgents: m.applyInjuries((faRaw.players || []).map((e) => m.normPlayer(e)), injuries, base.sched, cur),
       };
     }
 
     function clearCache() { try { root.localStorage.removeItem(probeKey); } catch (e) { /* ignore */ } }
 
-    return { mode, get, loadBase, loadWeek, loadLeague, clearCache };
+    return { mode, get, loadBase, loadWeek, loadLeague, loadInjuries, clearCache };
   }
 
   root.WPData = { create };

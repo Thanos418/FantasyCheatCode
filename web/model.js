@@ -10,14 +10,29 @@
   const SLOT_NAMES = ['PG', 'SG', 'SF', 'PF', 'C', 'G', 'F', 'SG/SF', 'G/F', 'PF/C', 'F/C', 'UTIL', 'BN', 'IR'];
   const STARTING_EXCLUDE = [12, 13];
   const OUT_STATUSES = ['OUT', 'INJURY_RESERVE', 'SUSPENSION'];
+  const IR_STATUSES = ['OUT', 'INJURY_RESERVE']; // the tags ESPN lets into an IR slot
   const STAT = { PTS: 0, BLK: 1, STL: 2, AST: 3, OREB: 4, DREB: 5, REB: 6, TO: 11, FGM: 13, FGA: 14, FTM: 15, FTA: 16, TPM: 17, TPA: 18, MIN: 40, GS: 41, GP: 42 };
   const POS_NAMES = ['PG', 'SG', 'SF', 'PF', 'C'];
   const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
   const DOWS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
   const LIVE_WINDOW_MS = 3.5 * 3600 * 1000;
 
+  // Projection settings, fitted on 2025-26 and checked on 2024-25 with tools/backtest.js.
+  const PRIOR_GAMES = 10;        // ESPN's season projection counts as this many games
+  const RECENT_15 = 1;           // extra weight on games from the last 15 days
+  const RECENT_30 = 1;           // extra weight on games from the last 30 days (so the last 15 count three times)
+  const MIN_TREND = 0.5;         // how far a change in minutes over the last 15 days moves the number
+  const MIN_TREND_SHRINK = 3;    // games it takes to trust that change halfway
+  const MIN_TREND_GP = 5;        // season games before minutes are compared at all
+  const AVAIL_BASE = 0.85;       // share of team games an NBA regular plays over the coming weeks
+  const AVAIL_GAMES = 10;        // team games his own record needs to count as much as that base
+  const BACK_PLAY = 0.75;        // chance an injured player really plays once his expected return date has come
+
   const isNum = (v) => typeof v === 'number' && isFinite(v);
   const isOut = (p) => OUT_STATUSES.indexOf(p.injury) >= 0;
+  const irEligible = (p) => IR_STATUSES.indexOf(p.injury) >= 0;
+  // Out on day sp: out now, and ESPN's injury report (p.back, see applyInjuries) does not expect him back by then.
+  const outOn = (p, sp) => isOut(p) && !(p.back && sp >= p.back.sp);
 
   /* --------------------------------------------------------------- dates */
 
@@ -81,6 +96,8 @@
       id: raw.id, season: raw.seasonId, name: st.name || '', size: st.size || Object.keys(teams).length, scoringType,
       isPoints: /POINTS/i.test(scoringType),
       caps, starters, benchCount: +counts[12] || 0, irCount: +counts[13] || 0,
+      // perDay: ESPN counts the limit per day of the matchup (1 a day = 7 for a normal week). It is a
+      // budget for the whole matchup: ESPN lets a team spend several of them on the same day.
       acq: { limit: acq.matchupAcquisitionLimit != null ? acq.matchupAcquisitionLimit : -1, perDay: !!acq.matchupLimitPerScoringPeriod },
       matchupPeriods: ss.matchupPeriods || {}, regularCount: ss.matchupPeriodCount || 0,
       currentSp: status.latestScoringPeriod != null ? status.latestScoringPeriod : raw.scoringPeriodId,
@@ -255,17 +272,84 @@
       if (e.appliedAverage) return e.appliedAverage;
       return gp(e) ? e.appliedTotal / gp(e) : null;
     };
-    const cur = find('00' + season), proj = find('10' + season), prev = find('00' + (season - 1)), l15 = find('02' + season);
+    const cur = find('00' + season), proj = find('10' + season), prev = find('00' + (season - 1));
+    const l15 = find('02' + season), l30 = find('03' + season) || l15; // no 30-day split: the 15-day games stand in
     const n = gp(cur);
     const curAvg = n ? avg(cur) : null;
     const pj = avg(proj), pv = avg(prev);
     const prior = pj != null ? pj : pv;
-    let fp;
+    const mpg = (e) => (gp(e) && e.stats[40] > 0 ? e.stats[40] / gp(e) : null);
+    let fp, minTrend = 0;
     if (prior == null) fp = curAvg != null ? curAvg : (avg(l15) != null ? avg(l15) : 0);
     else if (curAvg == null) fp = prior;
-    else fp = (n / (n + 10)) * curAvg + (10 / (n + 10)) * prior;
+    else {
+      // A weighted average of his games: recent ones count more, and the prior counts as PRIOR_GAMES games.
+      const n15 = avg(l15) != null ? Math.min(gp(l15), n) : 0, n30 = avg(l30) != null ? Math.min(gp(l30), n) : 0;
+      const sum = n * curAvg + RECENT_30 * n30 * (n30 ? avg(l30) : 0) + RECENT_15 * n15 * (n15 ? avg(l15) : 0) + PRIOR_GAMES * prior;
+      fp = sum / (n + RECENT_30 * n30 + RECENT_15 * n15 + PRIOR_GAMES);
+      // Minutes move before points do: a bigger or smaller role lately shifts the number part of the way.
+      const ms = mpg(cur), m15 = mpg(l15);
+      if (n >= MIN_TREND_GP && n15 && ms && m15 != null) {
+        minTrend = Math.max(-0.5, Math.min(0.5, MIN_TREND * (n15 / (n15 + MIN_TREND_SHRINK)) * (m15 / ms - 1)));
+        fp *= 1 + minTrend;
+      }
+    }
     if (!isPoints) fp = 1;
-    return { fp, curAvg, n, prior, espnProj: pj, l15: avg(l15), l15n: gp(l15), prevAvg: pv };
+    return { fp, curAvg, n, prior, espnProj: pj, l15: avg(l15), l15n: gp(l15), prevAvg: pv, mpg: mpg(cur), mpgL15: mpg(l15), minTrend };
+  }
+
+  // Share of his team's games a player can be expected to play over the coming weeks: his record this
+  // season, pulled towards AVAIL_BASE. teamGames = games his NBA team has played so far.
+  function availability(player, season, teamGames) {
+    const stats = (player && player.stats) || [];
+    let n = 0;
+    for (let i = 0; i < stats.length; i++) if (stats[i] && String(stats[i].id) === '00' + season) n = (stats[i].stats && stats[i].stats[42]) || 0;
+    return (n + AVAIL_GAMES * AVAIL_BASE) / (Math.max(teamGames || 0, n) + AVAIL_GAMES);
+  }
+  function teamGamesBefore(sched, proId, sp) {
+    const bt = (sched.byTeam && sched.byTeam[proId]) || {};
+    let n = 0;
+    Object.keys(bt).forEach((k) => { if (+k < sp) n++; });
+    return n;
+  }
+
+  /* ------------------------------------------------------------ injuries */
+
+  // ESPN's public injury report -> { playerId: { status, returnDate, season, type, note, updated } }.
+  // returnDate is ESPN's own estimate ('YYYY-MM-DD'); season = out for the season.
+  function normInjuries(raw) {
+    const out = {};
+    ((raw && raw.injuries) || []).forEach((t) => ((t && t.injuries) || []).forEach((i) => {
+      const a = (i && i.athlete) || {};
+      const href = (a.links || []).map((l) => (l && l.href) || '').find((h) => /\/id\/\d+/.test(h));
+      const id = href ? +/\/id\/(\d+)/.exec(href)[1] : null;
+      if (!id) return;
+      const d = i.details || {};
+      const fs = d.fantasyStatus || {};
+      out[id] = {
+        status: i.status || '', returnDate: /^\d{4}-\d{2}-\d{2}/.test(d.returnDate || '') ? d.returnDate.slice(0, 10) : null,
+        season: /OFS/i.test((fs.abbreviation || '') + ' ' + (fs.description || '')), type: d.type || '', note: i.shortComment || '', updated: i.date || null,
+      };
+    }));
+    return out;
+  }
+
+  // Marks each listed player with the report's note (p.news) and, when it gives one, his expected
+  // return (p.back = { sp, date, season }). A player who is out today is never expected back before
+  // tomorrow, whatever the report says. Listed without a date: no p.back, so nothing is assumed.
+  function applyInjuries(players, report, sched, currentSp) {
+    (players || []).forEach((p) => {
+      const r = report && report[p.id];
+      if (!r) return;
+      p.news = { type: r.type, note: r.note, status: r.status };
+      let sp = null;
+      if (r.season) sp = Infinity;
+      else if (r.returnDate) sp = dateSp(sched, r.returnDate);
+      if (sp == null) return;
+      if (isOut(p) && isNum(currentSp)) sp = Math.max(sp, currentSp + 1);
+      p.back = { sp, date: r.season ? null : spDate(sched, sp), season: !!r.season };
+    });
+    return players;
   }
 
   /* -------------------------------------------------------------- lineup */
@@ -347,7 +431,9 @@
     const abbrOf = (id) => (sched.teams[id] && sched.teams[id].abbrev) || '';
     const F = isPoints ? ctx.factors : null;
     const gameFactor = (p, sp) => gameMult(sched, F, p.proTeamId, sp);
-    const expFp = (p, sp) => projOf(p).fp * gameFactor(p, sp).mult;
+    // An injured player on or after his expected return date: he counts, with the chance that he really plays.
+    const returning = (p, sp) => isOut(p) && !outOn(p, sp);
+    const expFp = (p, sp) => projOf(p).fp * gameFactor(p, sp).mult * (returning(p, sp) ? BACK_PLAY : 1);
     const toCand = (p, sp) => ({ key: String(p.id), w: expFp(p, sp), slots: p.eligible || [] });
     const oppInfo = (g, proId) => { const home = g.home === proId; return { opp: abbrOf(home ? g.away : g.home), home }; };
     const reduceCaps = (used) => {
@@ -390,7 +476,7 @@
     const slotOrder = (r) => (r.gone ? 200 : r.player.slot === 12 ? 100 : r.player.slot === 13 ? 101 : r.player.slot == null ? 99 : r.player.slot);
 
     // ---- my pending claims: each processes on the claimed player's waiver date. From that day the
-    // claimed player is on my bench and the dropped one is gone; that day's add is used by the claim.
+    // claimed player is on my bench and the dropped one is gone.
     const faById = new Map((ctx.freeAgents || []).map((p) => [p.id, p]));
     const claims = [];
     (ctx.transactions || []).forEach((t) => {
@@ -404,13 +490,20 @@
           player: p ? Object.assign({}, p, { slot: 12, status: 'ONTEAM', claimFrom: sp }) : null });
       });
     });
+    // ctx.activations (set by planWeek): players coming off IR on a given day, each with the drop that
+    // makes room. They behave like a claim, but the player is already mine and no add is spent.
+    (ctx.activations || []).forEach((a) => {
+      const p = ((rosters[me] && rosters[me].current) || []).find((x) => x.id === a.playerId);
+      if (p) claims.push({ addId: a.playerId, dropId: a.dropId != null ? a.dropId : null, sp: a.sp, activate: true, player: Object.assign({}, p, { slot: 12, claimFrom: a.sp }) });
+    });
     const rosterOn = (teamId, current, sp) => {
       if (teamId !== me) return current;
       let r = current;
       claims.forEach((c) => {
         if (c.sp == null || sp < c.sp) return;
         r = r.filter((p) => p.id !== c.dropId);
-        if (c.player && !r.some((p) => p.id === c.addId)) r = r.concat([c.player]);
+        if (c.activate) r = r.filter((p) => p.id !== c.addId).concat([c.player]); // his IR entry becomes a bench entry
+        else if (c.player && !r.some((p) => p.id === c.addId)) r = r.concat([c.player]);
       });
       return r;
     };
@@ -438,7 +531,7 @@
         onRoster.forEach((p) => {
           const g = unstartedGame(p, sp);
           if (!g) return;
-          if (p.slot !== 13 && !isOut(p)) cands.push(toCand(p, sp));
+          if (p.slot !== 13 && !outOn(p, sp)) cands.push(toCand(p, sp));
         });
         const res = bestLineup(cands, capsX);
         const chosen = new Set(res.chosen.map((c) => c.key));
@@ -446,10 +539,10 @@
           const g = unstartedGame(p, sp);
           if (!g) return;
           const oi = oppInfo(g, p.proTeamId);
-          const out = isOut(p);
+          const out = outOn(p, sp);
           rowFor(p).cells[sp] = {
             t: 'proj', fp: expFp(p, sp), opp: oi.opp, home: oi.home, b2b: gameFactor(p, sp).b2b,
-            start: !out && p.slot !== 13 && chosen.has(String(p.id)), out, dtd: p.injury === 'DAY_TO_DAY', tip: g.date,
+            start: !out && p.slot !== 13 && chosen.has(String(p.id)), out, dtd: p.injury === 'DAY_TO_DAY', back: returning(p, sp), tip: g.date,
           };
         });
         info.remaining = res.chosen.length;
@@ -588,27 +681,34 @@
         pending.push({ add: nm(a.playerId), drop: drops[i] ? nm(drops[i].playerId) : null, sp: c ? c.sp : null });
       });
     });
-    const adds = { used, weekLimit, perDay: league.acq.perDay, limit: lim, todayUsed, pending };
+    // left = adds still free this week: a pending claim spends one when it processes.
+    const left = weekLimit == null ? null : Math.max(0, weekLimit - used - pending.length);
+    const adds = { used, weekLimit, perDay: league.acq.perDay, limit: lim, todayUsed, pending, left };
 
     // ---- recommendations
     const recs = { byDay: {}, board: [], note: null, spend: null, claimDays: {} };
     const remDays = sps.filter((sp) => kindOf(sp) !== 'past');
     const faAll = ctx.freeAgents || [];
+    // Days a pending claim processes on (for the night cards).
+    remDays.forEach((d) => {
+      const names = claims.filter((c) => c.sp === d && !c.activate).map((c) => nm(c.addId));
+      if (names.length) recs.claimDays[d] = names;
+    });
     if (remDays.length && myRaw.current.length) {
-      if (weekLimit != null && used >= weekLimit) {
-        recs.note = 'You have used all ' + weekLimit + ' adds for this week.';
-        remDays.forEach((sp) => { recs.byDay[sp] = []; });
-      } else {
-        computeRecs();
+      if (left === 0) {
+        recs.note = used >= weekLimit ? 'You have used all ' + weekLimit + ' adds for this week.'
+          : 'Your pending ' + (pending.length === 1 ? 'claim takes' : 'claims take') + ' the last of your ' + weekLimit + ' adds for this week.';
       }
+      computeRecs(left !== 0);
     }
 
-    function computeRecs() {
+    // canAdd false: no adds left this week, so only players coming off IR are looked at.
+    function computeRecs(canAdd) {
       const roster = myRaw.current.filter((p) => p.slot !== 13);
       const capsFor = (sp) => (sp === cur && myRaw.todayCaps ? myRaw.todayCaps : caps);
       const baseCands = {}, baseRes = {}, baseV = {}, baseChosen = {};
       remDays.forEach((sp) => {
-        baseCands[sp] = rosterOn(me, myRaw.current, sp).filter((p) => p.slot !== 13 && !isOut(p) && unstartedGame(p, sp)).map((p) => toCand(p, sp));
+        baseCands[sp] = rosterOn(me, myRaw.current, sp).filter((p) => p.slot !== 13 && !outOn(p, sp) && unstartedGame(p, sp)).map((p) => toCand(p, sp));
         baseRes[sp] = bestLineup(baseCands[sp], capsFor(sp));
         baseV[sp] = baseRes[sp].total;
         baseChosen[sp] = new Set(baseRes[sp].chosen.map((c) => c.key));
@@ -617,20 +717,25 @@
       // (dropping him now would break the claim).
       const claimDrops = new Set(pending.filter((x) => x.drop).map((x) => x.drop.id));
       const claimAdds = new Set(pending.map((x) => x.add.id));
+      const activated = new Set(); // already coming off IR in this plan
+      claims.forEach((c) => { if (c.activate) { activated.add(c.addId); if (c.dropId != null) claimDrops.add(c.dropId); } });
       const dropCands = roster.filter((p) => !claimDrops.has(p.id)).sort((a, b) => projOf(a).fp - projOf(b).fp).slice(0, 4);
       const options = dropCands.slice();
-      if (roster.length < league.starters + league.benchCount) options.push(null);
-
-      const minAdd = (cur >= remDays[0] && league.acq.perDay && lim > 0 && todayUsed >= lim) ? cur + 1 : -Infinity;
-      // Days whose add a pending claim already uses (daily limits only).
-      const claimUse = {};
-      claims.forEach((c) => { if (c.sp != null) (claimUse[c.sp] = claimUse[c.sp] || []).push(c); });
-      const claimBlocks = (d) => !!(league.acq.perDay && lim > 0 && claimUse[d] && claimUse[d].length >= lim);
-      recs.claimDays = {};
-      remDays.forEach((d) => { if (claimBlocks(d)) recs.claimDays[d] = claimUse[d].map((c) => nm(c.addId)); });
+      // A full roster can still add without a drop when an Out player can move to a free IR slot.
+      const joining = claims.filter((c) => c.player && c.dropId == null).length; // pending pickups that drop nobody
+      const rosterFull = roster.length + joining >= league.starters + league.benchCount;
+      const onIr = myRaw.current.filter((p) => p.slot === 13 && !activated.has(p.id)).length;
+      const irFree = (league.irCount || 0) > onIr;
+      const toIr = roster.find((p) => irEligible(p) && !claimDrops.has(p.id)) || null; // an Out player who could take an IR slot
+      const irMove = (rosterFull && irFree && toIr) || null;
+      if (!rosterFull || irMove) options.unshift(null); // first, so that no drop wins a tie
+      // A player coming off IR leaves his slot free, so an Out player can always swap into it.
+      const actIrMove = rosterFull ? toIr : null;
+      const actOptions = !rosterFull || actIrMove ? [null].concat(dropCands) : dropCands;
 
       // Long-term side of a move: expected points over his real games in the next ltWeeks weeks after
-      // this one (opponents, venue and back-to-backs included). longTerm = pickup minus dropped player.
+      // this one (opponents, venue and back-to-backs included), counted from his expected return if he
+      // is out, times the share of games he can be expected to play. longTerm = pickup minus dropped player.
       const ltWeeks = ctx.longTermWeeks != null ? ctx.longTermWeeks : 3;
       const ltTo = Math.min(league.finalSp || Infinity, week.last + 7 * ltWeeks);
       const ltCache = new Map();
@@ -639,20 +744,29 @@
         let v = ltCache.get(p.id);
         if (v == null) {
           v = 0;
-          for (let sp = week.last + 1; sp <= ltTo; sp++) if (teamGame(sched, p.proTeamId, sp)) v += expFp(p, sp);
+          for (let sp = week.last + 1; sp <= ltTo; sp++) if (teamGame(sched, p.proTeamId, sp) && !outOn(p, sp)) v += projOf(p).fp * gameFactor(p, sp).mult;
+          if (isPoints) v *= availability(p, season, teamGamesBefore(sched, p.proTeamId, cur));
           ltCache.set(p.id, v);
         }
         return v;
       };
       const pool = [];
-      faAll.forEach((f) => {
-        if (isOut(f) || claimAdds.has(f.id)) return;
-        const gd = remDays.filter((sp) => unstartedGame(f, sp));
+      (canAdd ? faAll : []).forEach((f) => {
+        if (claimAdds.has(f.id)) return;
+        const gd = remDays.filter((sp) => unstartedGame(f, sp) && !outOn(f, sp));
         if (!gd.length) return;
         pool.push({ f, gd, score: gd.reduce((t, sp) => t + expFp(f, sp), 0) });
       });
       pool.sort((a, b) => b.score - a.score);
       const top = pool.slice(0, 80);
+      // Players parked on IR who can play again this week: not out any more, or expected back in time.
+      // Bringing one back needs a roster spot like a pickup does, but spends no add.
+      myRaw.current.forEach((p) => {
+        if (p.slot !== 13 || activated.has(p.id)) return;
+        const f = Object.assign({}, p, { slot: 12 });
+        const gd = remDays.filter((sp) => unstartedGame(f, sp) && !outOn(f, sp));
+        if (gd.length) top.push({ f, gd, activate: true });
+      });
 
       const byDayAll = {};
       remDays.forEach((sp) => { byDayAll[sp] = []; });
@@ -663,13 +777,16 @@
         const fc = {};
         let avail = -Infinity;
         if (f.status === 'WAIVERS') avail = f.waiverDate ? dateSp(sched, etDate(f.waiverDate)) : cur;
-        const from = Math.max(avail, minAdd);
+        const from = avail;
+        // A free agent is picked up on a night he plays, or on the last day of the week: a pickup made
+        // for the weeks ahead can wait until the player dropped has played his games.
+        const lastDay = remDays[remDays.length - 1];
         // A claim happens the morning waivers process, game or no game; a free agent can wait for a night he plays.
         const claimDay = f.status === 'WAIVERS' ? remDays.find((d) => d >= from) : null;
         const fGame = {};
-        remDays.forEach((sp) => { fGame[sp] = !!unstartedGame(f, sp); if (fGame[sp]) fc[sp] = toCand(f, sp); });
+        remDays.forEach((sp) => { fGame[sp] = !!unstartedGame(f, sp) && !outOn(f, sp); if (fGame[sp]) fc[sp] = toCand(f, sp); });
         let fBest = null;
-        const perOpt = options.map((r) => {
+        const perOpt = (e.activate ? actOptions : options).map((r) => {
           const rKey = r ? String(r.id) : null;
           const delta = {}, fCh = {}, lineups = {};
           remDays.forEach((sp) => {
@@ -683,7 +800,7 @@
           return { r, rKey, delta, fCh, lineups };
         });
         remDays.forEach((d) => {
-          if ((f.status === 'WAIVERS' ? d !== claimDay : !fGame[d] || d < from) || claimBlocks(d)) return;
+          if (f.status === 'WAIVERS' ? d !== claimDay : (!fGame[d] && d !== lastDay) || d < from) return;
           let best = null;
           perOpt.forEach((o) => {
             let gain = 0, reach = 0, lost = 0;
@@ -699,6 +816,7 @@
           if (!best) return;
           const rec = {
             sp: d, fa: f, faProj: projOf(f), drop: best.o.r, dropProj: best.o.r ? projOf(best.o.r) : null,
+            irMove: best.o.r ? null : (e.activate ? actIrMove : irMove), activate: !!e.activate,
             gain: best.gain, longTerm: best.longTerm, net: best.net, ltWeeks, worth: best.net > 0.5,
             gamesReach: best.reach, gamesLost: best.lost,
             upgrade: best.o.r ? projOf(f).fp >= projOf(best.o.r).fp : true, waiver: f.status === 'WAIVERS',
@@ -706,7 +824,7 @@
           byDayAll[d].push(rec);
           if (!fBest || rec.net > fBest.rec.net + 1e-9) fBest = { rec, o: best.o };
         });
-        if (fBest && fBest.rec.gain > 0) {
+        if (!e.activate && fBest && (fBest.rec.gain > 0 || fBest.rec.worth)) {
           const dmap = {};
           remDays.forEach((s) => {
             if (s < fBest.rec.sp || !fGame[s]) return;
@@ -714,15 +832,16 @@
           });
           board.push({
             fa: f, faProj: fBest.rec.faProj, gamesLeft: e.gd.length, days: dmap, bestSp: fBest.rec.sp,
-            drop: fBest.rec.drop, gain: fBest.rec.gain, longTerm: fBest.rec.longTerm, net: fBest.rec.net,
+            drop: fBest.rec.drop, irMove: fBest.rec.irMove, gain: fBest.rec.gain, longTerm: fBest.rec.longTerm, net: fBest.rec.net,
             worth: fBest.rec.worth, upgrade: fBest.rec.upgrade,
           });
         }
       });
-      // Moves that help this week, best value (this week + next weeks) first. One "spend your add here":
-      // the best worthwhile move of the week; nights whose best move is not worth it are a hold.
+      // Moves that help this week or are worth it over the next weeks, best value (this week + next
+      // weeks) first. One "spend your add here": the best worthwhile move of the week; nights whose
+      // best move is not worth it are a hold.
       remDays.forEach((d) => {
-        recs.byDay[d] = byDayAll[d].filter((r) => r.gain > 0.5).sort((a, b) => b.net - a.net || b.gain - a.gain).slice(0, 3);
+        recs.byDay[d] = byDayAll[d].filter((r) => r.gain > 0.5 || r.worth).sort((a, b) => b.net - a.net || b.gain - a.gain).slice(0, 3);
       });
       let spend = null;
       remDays.forEach((d) => {
@@ -741,10 +860,52 @@
     };
   }
 
+  /* ------------------------------------------------------------ week plan */
+
+  // A plan for the rest of the week: the best worthwhile move, then the best one with that move already
+  // made, and so on. Every step is computeWeek again with the earlier moves in place as pending pickups,
+  // so no player is dropped twice and each gain is on top of the ones before it.
+  // Returns { moves (by day, each with its step in the order chosen), gain, longTerm, net, vm } where vm is
+  // the week with the whole plan made. Several moves can share a day: the add limit is a weekly budget.
+  // A move with activate: true brings a player back from IR instead of picking one up.
+  function planWeek(ctx, opts) {
+    opts = opts || {};
+    const max = opts.maxMoves != null ? opts.maxMoves : 7;
+    let vm = opts.vm || computeWeek(ctx);
+    let state = ctx;
+    const moves = [];
+    while (moves.length < max) { // adds stop on their own: each planned pickup holds one of the week's adds
+      const r = vm.recs && vm.recs.spend;
+      if (!r) break;
+      // step 1 is the week's best move; alts are the next best pickups for the same night at that point
+      moves.push(Object.assign({}, r, { step: moves.length + 1, alts: ((vm.recs.byDay && vm.recs.byDay[r.sp]) || []).filter((x) => x !== r) }));
+      let rosters = state.rosters;
+      if (r.irMove) { // the player who makes room goes to the IR slot
+        const mine = rosters[ctx.myTeamId];
+        rosters = Object.assign({}, rosters, { [ctx.myTeamId]: Object.assign({}, mine, { current: mine.current.map((p) => (p.id === r.irMove.id ? Object.assign({}, p, { slot: 13 }) : p)) }) });
+      }
+      if (r.activate) {
+        state = Object.assign({}, state, { rosters, activations: (state.activations || []).concat([{ playerId: r.fa.id, dropId: r.drop ? r.drop.id : null, sp: r.sp }]) });
+      } else {
+        const noon = Date.parse(spDate(ctx.sched, r.sp) + 'T17:00:00Z'); // midday US Eastern on the day of the move
+        const tx = { teamId: ctx.myTeamId, type: 'FREEAGENT', status: 'PENDING', scoringPeriodId: r.sp,
+          items: [{ type: 'ADD', playerId: r.fa.id }].concat(r.drop ? [{ type: 'DROP', playerId: r.drop.id }] : []) };
+        state = Object.assign({}, state, {
+          rosters, transactions: (state.transactions || []).concat([tx]),
+          freeAgents: (state.freeAgents || []).map((p) => (p.id === r.fa.id ? Object.assign({}, p, { waiverDate: noon }) : p)),
+        });
+      }
+      vm = computeWeek(state);
+    }
+    const sum = (k) => moves.reduce((t, m) => t + m[k], 0);
+    return { moves: moves.slice().sort((x, y) => x.sp - y.sp), gain: sum('gain'), longTerm: sum('longTerm'), net: sum('net'), vm };
+  }
+
   return {
-    SLOT_NAMES, STARTING_EXCLUDE, OUT_STATUSES, STAT,
+    SLOT_NAMES, STARTING_EXCLUDE, OUT_STATUSES, STAT, BACK_PLAY, irEligible, outOn,
+    availability, teamGamesBefore, normInjuries, applyInjuries,
     etDate, addDays, diffDays, weekdayOf, fmtRange,
     normLeague, detectMyTeam, buildProSchedule, teamGame, spDate, dateSp, calendarWeekOf, calendarWeekSps,
-    buildWeeks, normPlayer, gameStat, boxOf, projectPlayer, bestLineup, gameMult, computeWeek,
+    buildWeeks, normPlayer, gameStat, boxOf, projectPlayer, bestLineup, gameMult, computeWeek, planWeek,
   };
 });

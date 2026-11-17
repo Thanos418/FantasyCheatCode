@@ -60,13 +60,15 @@
   // team's expected score (the projected finish) does not change, only how far it can swing.
   function simTeam(tw, factors, dtdPlay, miss) {
     const b2bPlay = factors && factors.b2bPlay > 0 ? factors.b2bPlay : 1;
+    const backPlay = model().BACK_PLAY;
     const list = [];
     ((tw && tw.rows) || []).forEach((r, who) => {
       const cells = r.cells || {};
       Object.keys(cells).forEach((k) => {
         const c = cells[k];
         if (!c || c.t !== 'proj' || !c.start || c.out) return;
-        const bp = c.b2b && factors ? b2bPlay : 1;
+        // chances of playing that the expected points already allow for: back-to-backs, a return from injury
+        const bp = (c.b2b && factors ? b2bPlay : 1) * (c.back ? backPlay : 1);
         const q = bp * (c.dtd ? dtdPlay : 1) * (1 - miss);
         const x = (isNum(c.fp) ? c.fp : 0) / (bp * (1 - miss));
         list.push({ q, x, who });
@@ -220,21 +222,34 @@
       }
       return v;
     }
+    // Share of games he can be expected to play (WPModel.availability). args.availability === false turns it off.
+    const useAvail = isPoints && args.availability !== false;
+    const tgCache = new Map();
+    function availOf(p) {
+      if (!useAvail) return 1;
+      let tg = tgCache.get(p.proTeamId);
+      if (tg === undefined) { tg = M.teamGamesBefore(sched, p.proTeamId, league.currentSp); tgCache.set(p.proTeamId, tg); }
+      return M.availability(p, league.season, tg);
+    }
+    // fp = points per game (ranks players); w = the same times his availability (what a game is worth);
+    // first = first day of the run he can play: an out player counts from his expected return, if the
+    // injury report gives one, and a player parked in an IR slot without being out never does.
     function ent(p) {
       let e = entCache.get(p);
       if (!e) {
-        const ir = p.slot === 13, out = isOutP(p);
-        e = { p, fp: fpOf(p), tv: tv(p.proTeamId), adj: solver.adj(p.eligible || []), ir, out, active: !ir && !out };
+        const ir = p.slot === 13, out = isOutP(p), fp = fpOf(p);
+        const first = out ? (p.back && isNum(p.back.sp) ? Math.max(0, p.back.sp - from) : Infinity) : ir ? Infinity : 0;
+        e = { p, fp, w: fp * availOf(p), tv: tv(p.proTeamId), adj: solver.adj(p.eligible || []), ir, out, first, active: first < n };
         entCache.set(p, e);
       }
       return e;
     }
-    // Σ over days of the best lineup (IR and OUT players never play)
+    // Σ over days of the best lineup
     function valueOver(ents) {
       let total = 0;
       for (let d = 0; d < n; d++) {
         solver.reset();
-        for (let i = 0; i < ents.length; i++) { const e = ents[i]; if (e.active && e.tv[d] >= 0) solver.push(e.fp * e.tv[d], e.adj); }
+        for (let i = 0; i < ents.length; i++) { const e = ents[i]; if (d >= e.first && e.tv[d] >= 0) solver.push(e.w * e.tv[d], e.adj); }
         total += solver.total();
       }
       return total;
@@ -252,13 +267,16 @@
   /* ------------------------------------------------------------- trades */
 
   const cmpId = (a, b) => (a.p.id < b.p.id ? -1 : a.p.id > b.p.id ? 1 : 0);
-  // The lowest-projected non-IR players are dropped until the roster fits.
-  function forcedDrops(post, limit) {
+  // The lowest-projected non-IR players are dropped until the roster fits. Out players fill any free IR slots first.
+  function forcedDrops(post, limit, irCount) {
     const pool = post.filter((e) => !e.ir);
-    const over = pool.length - limit;
-    if (over <= 0) return [];
     pool.sort((a, b) => (a.fp - b.fp) || cmpId(a, b));
-    return pool.slice(0, over);
+    let free = (irCount || 0) - (post.length - pool.length);
+    for (let i = pool.length - 1; i >= 0 && free > 0; i--) {
+      if (model().irEligible(pool[i].p)) { pool.splice(i, 1); free--; }
+    }
+    const over = pool.length - limit;
+    return over > 0 ? pool.slice(0, over) : [];
   }
   const rosterLimit = (league) => (league.starters || 0) + (league.benchCount || 0);
 
@@ -278,7 +296,7 @@
       const before = run.perWeek(run.valueOver(roster.map(run.ent)));
       const outSet = new Set(out);
       const post = roster.filter((p) => !outSet.has(p)).concat(inn).map(run.ent);
-      const drops = forcedDrops(post, limit);
+      const drops = forcedDrops(post, limit, league.irCount);
       const dropSet = new Set(drops);
       const after = run.perWeek(run.valueOver(post.filter((e) => !dropSet.has(e))));
       return { v: { before, after, delta: after - before }, drops: drops.map((e) => e.p) };
@@ -300,7 +318,7 @@
       const e = Object.assign({}, run.ent(p));
       e.bit = Math.pow(2, idx++);
       e.play = new Uint8Array(n);
-      if (e.active) for (let d = 0; d < n; d++) e.play[d] = e.tv[d] >= 0 ? 1 : 0;
+      for (let d = 0; d < n; d++) e.play[d] = d >= e.first && e.tv[d] >= 0 ? 1 : 0;
       return e;
     };
     function mkSide(roster) {
@@ -309,7 +327,7 @@
       let baseTotal = 0, nonIr = 0;
       for (let d = 0; d < n; d++) {
         solver.reset();
-        for (let i = 0; i < ents.length; i++) if (ents[i].play[d]) solver.push(ents[i].fp * ents[i].tv[d], ents[i].adj);
+        for (let i = 0; i < ents.length; i++) if (ents[i].play[d]) solver.push(ents[i].w * ents[i].tv[d], ents[i].adj);
         base[d] = solver.total();
         baseTotal += base[d];
       }
@@ -325,7 +343,7 @@
       for (let i = 0; i < out.length; i++) if (!out[i].ir) cnt--;
       for (let i = 0; i < inn.length; i++) if (!inn[i].ir) cnt++;
       if (cnt <= limit) return [];
-      return forcedDrops(S.ents.filter((e) => out.indexOf(e) < 0).concat(inn), limit);
+      return forcedDrops(S.ents.filter((e) => out.indexOf(e) < 0).concat(inn), limit, run.league.irCount);
     }
     function sideTotal(S, removed, added) {
       let total = 0;
@@ -339,9 +357,9 @@
           solver.reset();
           for (let i = 0; i < S.ents.length; i++) {
             const e = S.ents[i];
-            if (e.play[d] && removed.indexOf(e) < 0) solver.push(e.fp * e.tv[d], e.adj);
+            if (e.play[d] && removed.indexOf(e) < 0) solver.push(e.w * e.tv[d], e.adj);
           }
-          for (let i = 0; i < added.length; i++) if (added[i].play[d]) solver.push(added[i].fp * added[i].tv[d], added[i].adj);
+          for (let i = 0; i < added.length; i++) if (added[i].play[d]) solver.push(added[i].w * added[i].tv[d], added[i].adj);
           v = solver.total();
           S.memo[d].set(mask, v);
         }
@@ -558,12 +576,30 @@
   /* -------------------------------------------------------------- digest */
 
   const INJURY_LABEL = { OUT: 'OUT', INJURY_RESERVE: 'IR', SUSPENSION: 'suspended', DAY_TO_DAY: 'DTD' };
+  const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  // ESPN's expected return for an out player, as text: ', back around Nov 24' / ', out for the season' / ''
+  function backText(p) {
+    if (!p || !p.back || !isOutP(p)) return '';
+    if (p.back.season) return ', out for the season';
+    const d = p.back.date || '';
+    return /^\d{4}-\d{2}-\d{2}/.test(d) ? ', back around ' + MONTHS[+d.slice(5, 7) - 1] + ' ' + (+d.slice(8, 10)) : '';
+  }
 
   function pctText(p) {
     let v = Math.round(p * 100);
     if (v >= 100 && p < 1) v = 99;
     if (v <= 0 && p > 0) v = 1;
     return v + '%';
+  }
+
+  // ', enter it before Tue 08:00' in the local time zone of whoever runs the digest
+  function claimBy(fa) {
+    const ms = fa && fa.waiverDate;
+    if (!isNum(ms)) return '';
+    try {
+      return ', enter it before ' + new Intl.DateTimeFormat('en-GB', { weekday: 'short' }).format(ms) + ' ' +
+        new Intl.DateTimeFormat('en-GB', { hour: '2-digit', minute: '2-digit' }).format(ms);
+    } catch (e) { return ''; }
   }
 
   function digest(args) {
@@ -600,7 +636,7 @@
     }
 
     const hurt = rows.filter((r) => r.player && INJURY_LABEL[r.player.injury])
-      .map((r) => r.player.name + ' (' + INJURY_LABEL[r.player.injury] + ')');
+      .map((r) => r.player.name + ' (' + INJURY_LABEL[r.player.injury] + backText(r.player) + ')');
     lines.push('Injuries: ' + (hurt.length ? hurt.join(', ') : 'none'));
 
     const myIds = new Set(rows.map((r) => r.player.id));
@@ -608,11 +644,15 @@
       .map((r) => r.player.name + ' (' + r.role + ')');
     lines.push('Role changes: ' + (roles.length ? roles.join(', ') : 'none'));
 
-    const rec = vm.recs && vm.recs.byDay && vm.recs.byDay[today] && vm.recs.byDay[today][0];
+    // With a week plan (WPModel.planWeek): today's move is the plan's, and a day without one shows what
+    // is left once the whole plan is made. Without a plan, the day's own best add as before.
+    const plan = args.plan && args.plan.moves ? args.plan : null;
+    const planMove = plan ? plan.moves.find((m) => m.sp === today) || null : null;
+    const left = plan && plan.vm ? plan.vm : vm;
+    const rec = planMove || (left.recs && left.recs.byDay && left.recs.byDay[today] && left.recs.byDay[today][0]);
     const claimToday = vm.recs && vm.recs.claimDays && vm.recs.claimDays[today];
-    if (claimToday && claimToday.length) {
-      lines.push('Claim day: ' + claimToday.map((x) => x.name).join(', ') + ' joins today and uses today’s add');
-    } else if (rec && rec.fa) {
+    if (claimToday && claimToday.length) lines.push('Claim day: ' + claimToday.map((x) => x.name).join(', ') + ' joins your roster today');
+    if (rec && rec.fa) {
       const abbrevOf = (id) => {
         const gs = vm.gamesPerTeam || [];
         for (let i = 0; i < gs.length; i++) {
@@ -622,28 +662,35 @@
         return '';
       };
       const tag = [abbrevOf(rec.fa.proTeamId), rec.fa.pos].filter(Boolean).join(', ');
-      const head = rec.worth === false ? 'Hold today. This week only: ' : rec.spend ? 'Spend your add today: ' : 'Best add today: ';
-      let s = head + rec.fa.name + (tag ? ' (' + tag + ')' : '') +
-        (rec.drop ? ', drop ' + rec.drop.name : ', no drop needed') + ', +' + f1(rec.gain) + ' FP this week';
+      const head = planMove ? 'In your plan today: ' : rec.worth === false ? 'Hold today. This week only: ' : rec.spend ? 'Spend your add today: ' : 'Best add today: ';
+      let s = head + (rec.activate ? 'activate ' : '') + rec.fa.name + (rec.activate ? ' from IR' : tag ? ' (' + tag + ')' : '') +
+        (rec.drop ? ', drop ' + rec.drop.name : rec.irMove ? ', move ' + rec.irMove.name + ' to IR, no drop' : ', no drop needed') + ', +' + f1(rec.gain) + ' FP this week';
       const dw = winDelta(wp, rec.gain);
       if (dw !== null && Math.abs(dw) >= 0.005) s += ', ' + (dw > 0 ? '+' : '-') + Math.round(Math.abs(dw) * 100) + '% win chance';
       if (isNum(rec.longTerm)) s += ', ' + (rec.longTerm >= 0 ? '+' : '') + f1(rec.longTerm) + ' FP over the next ' + (rec.ltWeeks || 3) + ' weeks';
       if (rec.waiver) s += ' (waiver claim)';
       lines.push(s);
       const sp = vm.recs && vm.recs.spend;
-      if (sp && sp !== rec && sp.fa) {
+      if (!plan && sp && sp !== rec && sp.fa) {
         const day = (vm.days || []).find((x) => x.sp === sp.sp);
-        lines.push('Best night for an add this week: ' + (day ? day.dow : 'sp ' + sp.sp) + ', ' + sp.fa.name + (sp.drop ? ' for ' + sp.drop.name : '') + ', total ' + (sp.net >= 0 ? '+' : '') + f1(sp.net) + ' FP' + (sp.waiver ? ' (waiver claim, processes that morning)' : ''));
+        lines.push('Best night for an add this week: ' + (day ? day.dow : 'sp ' + sp.sp) + ', ' + sp.fa.name + (sp.drop ? ' for ' + sp.drop.name : sp.irMove ? ', moving ' + sp.irMove.name + ' to IR' : '') + ', total ' + (sp.net >= 0 ? '+' : '') + f1(sp.net) + ' FP' + (sp.waiver ? ' (waiver claim, processes that morning)' : ''));
       }
     } else {
       const note = vm.recs && vm.recs.note;
       lines.push('No add worth it today' + (note ? ' (' + note + ')' : ''));
     }
+    if (plan && plan.moves.length) {
+      const dayOf = (sp) => { const d = (vm.days || []).find((x) => x.sp === sp); return d && d.dow ? d.dow : 'day ' + sp; };
+      const sgn = (v) => (v >= 0 ? '+' : '') + f1(v);
+      lines.push('Plan for the week: ' + plan.moves.map((m) => dayOf(m.sp) + ' ' + (m.activate ? 'activate ' : '') + m.fa.name + (m.activate ? ' from IR' : '') +
+        (m.drop ? (m.activate ? ', drop ' : ' for ') + m.drop.name : m.irMove ? ' (move ' + m.irMove.name + ' to IR)' : '') + (m.waiver ? ' (waiver claim' + claimBy(m.fa) + ')' : '')).join('; ') +
+        '. ' + sgn(plan.gain) + ' FP this week, ' + sgn(plan.longTerm) + ' over the next ' + ((plan.moves[0] && plan.moves[0].ltWeeks) || 3) + ' weeks');
+    }
     return lines.join('\n');
   }
 
   return {
-    winProbability, winDelta, playoffPlanner, trends, buyLowSellHigh, rosValue,
+    winProbability, winDelta, playoffPlanner, trends, buyLowSellHigh, rosValue, backText,
     analyzeTrade, tradeIdeas, powerRankings, digest,
   };
 });

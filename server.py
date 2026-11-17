@@ -8,6 +8,7 @@ Python 3.8+, standard library only. Binds 127.0.0.1 only.
 - Serves the static app from ./web (relative to this file, not the cwd).
 - GET/POST /config   read / save config.json (espn_s2 is never returned).
 - GET /espn/<rest>   proxy to the ESPN fantasy basketball API with the saved cookies.
+- GET /injuries      ESPN's public NBA injury report (expected return dates). No cookies are sent.
 """
 import argparse
 import errno
@@ -36,6 +37,8 @@ CONFIG_PATH = os.path.join(BASE_DIR, "config.json")
 CACHE_DIR = os.path.join(BASE_DIR, ".cache")
 
 ESPN_BASE = "https://lm-api-reads.fantasy.espn.com/apis/v3/games/fba/"
+INJURY_URL = "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/injuries"
+INJURY_TTL = 900  # seconds
 DEFAULT_LEAGUE_ID = 1257343892
 DEFAULT_PORT = 8765
 USER_AGENT = (
@@ -419,13 +422,13 @@ def _decode_body(data, encoding):
     return data
 
 
-def _upstream(url, cfg, flt):
+def _upstream(url, cfg, flt, cookies=True):
     headers = {
         "Accept": "application/json",
         "Accept-Encoding": "gzip",
         "User-Agent": USER_AGENT,
     }
-    if cfg["espn_s2"] and cfg["swid"]:
+    if cookies and cfg["espn_s2"] and cfg["swid"]:
         headers["Cookie"] = "espn_s2=%s; SWID=%s" % (cfg["espn_s2"], cfg["swid"])
     if flt:
         headers["x-fantasy-filter"] = flt
@@ -475,18 +478,26 @@ def parse_ttl(value):
     return max(0, min(MAX_TTL, ttl))
 
 
-def espn_get(rest, query, flt, ttl, cfg=None, use_cache=True):
-    """Return (body_bytes, source) where source is hit-mem | hit-disk | miss."""
+def espn_get(rest, query, flt, ttl, cfg=None, use_cache=True, public_url=None):
+    """Return (body_bytes, source) where source is hit-mem | hit-disk | miss.
+
+    public_url: a fixed public ESPN address to fetch instead of the fantasy API. No cookies are sent
+    to it and its cache entry is shared by every account.
+    """
     if cfg is None:
         cfg = load_config()
-    if (
-        ".." in rest
-        or not re.fullmatch(r"[A-Za-z0-9_\-./]*", rest)
-        or re.search(r"[\x00-\x20\x7f]", query)
-    ):
-        raise EspnError(400, "bad_request", "Invalid ESPN path.")
-    url = ESPN_BASE + rest + ("?" + query if query else "")
-    key = cache_key(rest, query, flt, cfg["swid"])
+    if public_url:
+        url = public_url
+        key = cache_key(rest, query, None, "public")
+    else:
+        if (
+            ".." in rest
+            or not re.fullmatch(r"[A-Za-z0-9_\-./]*", rest)
+            or re.search(r"[\x00-\x20\x7f]", query)
+        ):
+            raise EspnError(400, "bad_request", "Invalid ESPN path.")
+        url = ESPN_BASE + rest + ("?" + query if query else "")
+        key = cache_key(rest, query, flt, cfg["swid"])
     if use_cache and ttl > 0:
         hit = cache_get(key)
         if hit:
@@ -498,7 +509,7 @@ def espn_get(rest, query, flt, ttl, cfg=None, use_cache=True):
                 hit = cache_get(key)  # another thread may have filled it
                 if hit:
                     return hit
-            body = _upstream(url, cfg, flt)
+            body = _upstream(url, cfg, flt, cookies=not public_url)
             first = body.lstrip()[:1]
             if first not in (b"{", b"["):
                 raise EspnError(502, "bad_response", "ESPN returned something that is not JSON. Try again later.")
@@ -597,6 +608,14 @@ class Handler(BaseHTTPRequestHandler):
                 return
             self._proxy(path[len("/espn/"):], parts.query)
             return
+        if path == "/injuries":
+            if self.command not in ("GET", "HEAD"):
+                self._error(405, "method_not_allowed", "Use GET.")
+                return
+            if not self._guard_api():
+                return
+            self._proxy("injuries", "", public_url=INJURY_URL)
+            return
         if self.command not in ("GET", "HEAD"):
             self._error(405, "method_not_allowed", "Use GET.")
             return
@@ -644,17 +663,17 @@ class Handler(BaseHTTPRequestHandler):
         self._json(200, public_config(load_config()))
 
     # ---- /espn ----
-    def _proxy(self, rest, query):
+    def _proxy(self, rest, query, public_url=None):
         t0 = time.time()
-        ttl = parse_ttl(self.headers.get("x-cache-ttl"))
-        flt = self.headers.get("x-fantasy-filter")
+        ttl = INJURY_TTL if public_url else parse_ttl(self.headers.get("x-cache-ttl"))
+        flt = None if public_url else self.headers.get("x-fantasy-filter")
         if flt is not None:
             flt = flt.replace("\r", "").replace("\n", "").strip()
             if len(flt) > 8192:
                 self._error(400, "bad_request", "x-fantasy-filter is too long.")
                 return
         try:
-            body, src = espn_get(rest, query, flt or None, ttl)
+            body, src = espn_get(rest, query, flt or None, ttl, public_url=public_url)
         except EspnError as e:
             self._log_espn(e.status, "err", rest, query, t0)
             self._json(e.status, {"error": e.code, "message": e.message})
