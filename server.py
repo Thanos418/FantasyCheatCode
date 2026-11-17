@@ -27,7 +27,8 @@ import urllib.error
 import urllib.request
 import webbrowser
 import zlib
-from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, unquote, urlsplit
 
@@ -39,6 +40,21 @@ CACHE_DIR = os.path.join(BASE_DIR, ".cache")
 ESPN_BASE = "https://lm-api-reads.fantasy.espn.com/apis/v3/games/fba/"
 INJURY_URL = "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/injuries"
 INJURY_TTL = 900  # seconds
+
+# The Bets view: public NBA data and bookmaker odds. No cookies are sent to any of these.
+NBA_SCOREBOARD = "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard?dates=%s&limit=200"
+NBA_PROPS = ("https://sports.core.api.espn.com/v2/sports/basketball/leagues/nba/events/%s/competitions/%s"
+             "/odds/100/propBets?limit=1000&pageSize=1000&page=%d")
+NBA_GAMELOG = "https://site.web.api.espn.com/apis/common/v3/sports/basketball/nba/athletes/%s/gamelog?season=%d"
+NBA_PLAYERS = ESPN_BASE + "seasons/%d/segments/0/leaguedefaults/3?view=kona_player_info"
+BETANO_NBA = "https://www.betano.pt/api/sport/basquetebol/eua/nba/441g/?req=la,s,stnf,c,mb"
+BETANO_EVENT = "https://www.betano.pt/api%s?bt=1&req=la,s,stnf,c,mb"
+BETCLIC_NBA = "https://www.betclic.pt/basquetebol-sbasketball/nba-c13"
+BETCLIC_BASE = "https://www.betclic.pt"
+ODDS_TTL = 120  # seconds: lines move
+GAMELOG_TTL = 1800  # the season in progress
+PAST_TTL = 30 * 24 * 3600  # finished games and seasons
+MAX_IDS = 400
 DEFAULT_LEAGUE_ID = 1257343892
 DEFAULT_PORT = 8765
 USER_AGENT = (
@@ -422,9 +438,9 @@ def _decode_body(data, encoding):
     return data
 
 
-def _upstream(url, cfg, flt, cookies=True):
+def _upstream(url, cfg, flt, cookies=True, accept="application/json"):
     headers = {
-        "Accept": "application/json",
+        "Accept": accept,
         "Accept-Encoding": "gzip",
         "User-Agent": USER_AGENT,
     }
@@ -518,6 +534,157 @@ def espn_get(rest, query, flt, ttl, cfg=None, use_cache=True, public_url=None):
             return body, "miss"
     finally:
         _unlock_for(key, ent)
+
+
+# --------------------------------------------------------------------------
+# Bets view: public sources (ESPN, DraftKings lines through ESPN, Betano, Betclic)
+# --------------------------------------------------------------------------
+
+
+def public_get(name, url, ttl, flt=None, transform=None, source="ESPN", accept="application/json"):
+    """Fetch a public address without cookies, optionally reshape it, and cache the JSON result."""
+    key = cache_key("public/" + name, "", flt, "public")
+    if ttl > 0:
+        hit = cache_get(key)
+        if hit:
+            return hit
+    ent = _lock_for(key)
+    try:
+        with ent[0]:
+            if ttl > 0:
+                hit = cache_get(key)
+                if hit:
+                    return hit
+            try:
+                body = _upstream(url, {"espn_s2": "", "swid": ""}, flt, cookies=False, accept=accept)
+            except EspnError as e:
+                raise EspnError(e.status, e.code, e.message.replace("ESPN", source))
+            if transform:
+                body = transform(body)
+            if body.lstrip()[:1] not in (b"{", b"["):
+                raise EspnError(502, "bad_response", "%s returned something that is not JSON. Try again later." % source)
+            if ttl > 0:
+                cache_put(key, body, ttl)
+            return body, "miss"
+    finally:
+        _unlock_for(key, ent)
+
+
+def _slim_props(body):
+    """DraftKings prop lines from ESPN, without the links: about a tenth of the size."""
+    data = json.loads(body)
+    items = []
+    for it in data.get("items") or []:
+        m = re.search(r"/athletes/(\d+)", ((it.get("athlete") or {}).get("$ref") or ""))
+        odds = it.get("odds") or {}
+        items.append({
+            "athlete": {"$ref": "athletes/" + m.group(1)} if m else None,
+            "type": it.get("type"),
+            "odds": {"american": odds.get("american"), "total": odds.get("total")},
+            "current": it.get("current"),
+            "open": it.get("open"),
+        })
+    return json.dumps({"count": data.get("count"), "pageCount": data.get("pageCount"), "items": items}).encode("utf-8")
+
+
+def _slim_gamelog(body):
+    """An ESPN game log with only what the Bets view reads (WPBets.normGamelog)."""
+    d = json.loads(body)
+    evs = {}
+    for k, e in (d.get("events") or {}).items():
+        opp, team = e.get("opponent") or {}, e.get("team") or {}
+        evs[k] = {"gameDate": e.get("gameDate"), "atVs": e.get("atVs"),
+                  "opponent": {"id": opp.get("id"), "abbreviation": opp.get("abbreviation")},
+                  "team": {"id": team.get("id"), "abbreviation": team.get("abbreviation")}}
+    sts = [{"displayName": st.get("displayName"),
+            "categories": [{"events": c.get("events") or []} for c in st.get("categories") or []]}
+           for st in d.get("seasonTypes") or []]
+    return json.dumps({"labels": d.get("labels"), "events": evs, "seasonTypes": sts}).encode("utf-8")
+
+
+def _betclic_state(body):
+    """Betclic has no public odds API, but each page carries its odds as JSON (Angular's ng-state)."""
+    html = body.decode("utf-8", "replace")
+    m = re.search(r'<script id="ng-state" type="application/json">(.*?)</script>', html, re.S)
+    if not m:
+        raise EspnError(502, "bad_response", "Betclic changed its page: no odds found.")
+    st = json.loads(m.group(1))
+    return json.dumps({k: v for k, v in st.items() if k.startswith("grpc:")}).encode("utf-8")
+
+
+def _ids(value):
+    ids = [x for x in (value or "").split(",") if x]
+    if not ids or len(ids) > MAX_IDS or not all(re.fullmatch(r"\d{1,10}", x) for x in ids):
+        raise EspnError(400, "bad_request", "ids must be 1 to %d numbers separated by commas." % MAX_IDS)
+    return ids
+
+
+def _season(value):
+    if not re.fullmatch(r"20\d\d", value or ""):
+        raise EspnError(400, "bad_request", "season must be a year such as 2027.")
+    return int(value)
+
+
+def odds_get(sub, q):
+    """Answer /odds/<sub>. Returns (body, source)."""
+    one = lambda k: (q.get(k) or [""])[0]
+    if sub == "scoreboard":
+        date = one("date")
+        if not re.fullmatch(r"\d{8}", date):
+            raise EspnError(400, "bad_request", "date must be YYYYMMDD.")
+        past = date < (datetime.utcnow() - timedelta(days=2)).strftime("%Y%m%d")
+        return public_get("sb/" + date, NBA_SCOREBOARD % date, PAST_TTL if past else ODDS_TTL)
+    if sub == "props":
+        ev = one("event")
+        if not re.fullmatch(r"\d{6,12}", ev):
+            raise EspnError(400, "bad_request", "event must be an ESPN game id.")
+        first, src = public_get("props/%s/1" % ev, NBA_PROPS % (ev, ev, 1), ODDS_TTL, transform=_slim_props, source="ESPN odds")
+        data = json.loads(first)
+        for page in range(2, min(int(data.get("pageCount") or 1), 6) + 1):
+            more, _ = public_get("props/%s/%d" % (ev, page), NBA_PROPS % (ev, ev, page), ODDS_TTL,
+                                 transform=_slim_props, source="ESPN odds")
+            data["items"].extend(json.loads(more)["items"])
+        return json.dumps(data).encode("utf-8"), src
+    if sub == "gamelogs":
+        season, ids = _season(one("season")), _ids(one("ids"))
+        ttl = GAMELOG_TTL if season >= default_season() else PAST_TTL
+
+        def fetch(pid):
+            try:
+                body, _ = public_get("gl/%d/%s" % (season, pid), NBA_GAMELOG % (pid, season), ttl, transform=_slim_gamelog)
+                return pid, json.loads(body)
+            except Exception:
+                return pid, None  # a player without a log this season; the rest still load
+
+        with ThreadPoolExecutor(8) as pool:
+            out = dict(pool.map(fetch, ids))
+        return json.dumps(out).encode("utf-8"), "mixed"
+    if sub == "players":
+        season, ids = _season(one("season")), _ids(one("ids"))
+        flt = json.dumps({"players": {"filterIds": {"value": [int(x) for x in ids]}, "limit": len(ids),
+                                      "sortPercOwned": {"sortPriority": 1, "sortAsc": False},
+                                      "filterStatsForSourceIds": {"value": [0, 1]},
+                                      "filterStatsForSplitTypeIds": {"value": [0]}}})
+        return public_get("players/%d/%s" % (season, ",".join(sorted(ids))), NBA_PLAYERS % season, GAMELOG_TTL, flt=flt,
+                          source="ESPN fantasy")
+    if sub == "betano":
+        return public_get("betano/nba", BETANO_NBA, ODDS_TTL, source="Betano", accept="application/json, text/plain, */*")
+    if sub == "betano/event":
+        path = one("path")
+        if not re.fullmatch(r"/odds/[a-z0-9-]{3,120}/\d{4,12}/", path):
+            raise EspnError(400, "bad_request", "path must be a Betano game address such as /odds/a-b/123/.")
+        return public_get("betano/" + path, BETANO_EVENT % path, ODDS_TTL, source="Betano",
+                          accept="application/json, text/plain, */*")
+    if sub == "betclic":
+        return public_get("betclic/nba", BETCLIC_NBA, ODDS_TTL, transform=_betclic_state, source="Betclic",
+                          accept="text/html,application/xhtml+xml")
+    if sub == "betclic/event":
+        path = one("path")
+        if not re.fullmatch(r"/basquetebol-sbasketball/nba-c13/[a-z0-9-]{3,120}-m\d{6,20}", path):
+            raise EspnError(400, "bad_request", "path must be a Betclic NBA game address.")
+        return public_get("betclic/" + path, BETCLIC_BASE + path, ODDS_TTL, transform=_betclic_state, source="Betclic",
+                          accept="text/html,application/xhtml+xml")
+    raise EspnError(404, "not_found", "Unknown odds address.")
 
 
 # --------------------------------------------------------------------------
@@ -616,6 +783,14 @@ class Handler(BaseHTTPRequestHandler):
                 return
             self._proxy("injuries", "", public_url=INJURY_URL)
             return
+        if path.startswith("/odds/"):
+            if self.command not in ("GET", "HEAD"):
+                self._error(405, "method_not_allowed", "Use GET.")
+                return
+            if not self._guard_api():
+                return
+            self._odds(path[len("/odds/"):], parts.query)
+            return
         if self.command not in ("GET", "HEAD"):
             self._error(405, "method_not_allowed", "Use GET.")
             return
@@ -683,6 +858,21 @@ class Handler(BaseHTTPRequestHandler):
             self._json(500, {"error": "server_error", "message": "Unexpected error: %s" % e.__class__.__name__})
             return
         self._log_espn(200, src, rest, query, t0)
+        self._send(200, body, "application/json; charset=utf-8", {"X-WP-Cache": src})
+
+    def _odds(self, sub, query):
+        t0 = time.time()
+        try:
+            body, src = odds_get(sub, parse_qs(query))
+        except EspnError as e:
+            self._log_espn(e.status, "err", "odds/" + sub, query, t0)
+            self._json(e.status, {"error": e.code, "message": e.message})
+            return
+        except Exception as e:  # never leak a traceback page
+            self._log_espn(500, "err", "odds/" + sub, query, t0)
+            self._json(500, {"error": "server_error", "message": "Unexpected error: %s" % e.__class__.__name__})
+            return
+        self._log_espn(200, src, "odds/" + sub, query, t0)
         self._send(200, body, "application/json; charset=utf-8", {"X-WP-Cache": src})
 
     def _log_espn(self, status, src, rest, query, t0):

@@ -94,7 +94,7 @@
   /* -------------------------------------------------------------------- state */
 
   // The view lives in the address (#trades), so reload, Back and a bookmark all land on it.
-  const VIEW_IDS = ['week', 'playoffs', 'trends', 'trades', 'league'];
+  const VIEW_IDS = ['week', 'playoffs', 'trends', 'trades', 'league', 'bets'];
   const hashView = () => { const h = String(window.location.hash || '').replace(/^#/, ''); return VIEW_IDS.indexOf(h) >= 0 ? h : null; };
   // auto follows the system setting; light and dark override it (styles.css reads data-theme).
   const THEMES = ['auto', 'light', 'dark'];
@@ -327,7 +327,7 @@
     const w = weeks[i];
     const onWeek = S.view === 'week';
     if (onWeek && !w) return '';
-    const busy = S.loading || (!onWeek && S.lgLoading);
+    const busy = S.view === 'bets' ? !!(betsView && betsView.busy()) : S.loading || (!onWeek && S.lgLoading);
     const synced = S.syncedAt ? 'Synced ' + esc(clock(S.syncedAt)) : '';
     let left, note = '';
     if (onWeek) {
@@ -962,7 +962,14 @@
      Playoffs, Trends, Trades and League read client.loadLeague() and WPInsights. Every WPInsights
      call goes through needInsights() so a missing module shows a message instead of a broken page. */
 
-  const VIEWS = [['week', 'This week'], ['playoffs', 'Playoffs'], ['trends', 'Trends'], ['trades', 'Trades'], ['league', 'League']];
+  const VIEWS = [['week', 'This week'], ['playoffs', 'Playoffs'], ['trends', 'Trends'], ['trades', 'Trades'], ['league', 'League'], ['bets', 'Bets']];
+
+  // The Bets view lives in bets-view.js; it needs no league data, only the season.
+  const betsView = window.WPBetsView ? window.WPBetsView.create({
+    esc,
+    season: () => (S.base && S.base.league && S.base.league.season) || (new Date().getMonth() >= 7 ? new Date().getFullYear() + 1 : new Date().getFullYear()),
+    rerender: () => { if (S.view === 'bets') { renderTop(); renderBody(); } },
+  }) : null;
 
   function viewsHTML() {
     return '<nav class="wp-views" aria-label="View">' + VIEWS.map((v) => {
@@ -1438,6 +1445,7 @@
   }
 
   function bodyHTML() {
+    if (S.view === 'bets') return betsView ? betsView.html() : errorHTML(new Error('bets-view.js did not load. Make sure it sits next to index.html, then reload.'), 'Could not open Bets', 'retry-view');
     if (S.view !== 'week') return leagueBodyHTML();
     if (S.error && !S.vm) return errorHTML(S.error);
     if (!S.vm) return loadingHTML('Loading ' + ((S.base && S.base.weeks[S.weekIdx] && S.base.weeks[S.weekIdx].label) || 'week') + '…');
@@ -1534,7 +1542,7 @@
     store.set('wp:view', v);
     if (hashView() !== v) { try { window.location.hash = v; } catch (e) { /* the view still changes */ } }
     S.enter = true;
-    if (v !== 'week') ensureLeague();
+    if (v === 'bets') { if (betsView) betsView.ensure(); } else if (v !== 'week') ensureLeague();
     renderTop();
     renderViews();
     renderBody();
@@ -1676,7 +1684,7 @@
       rememberLeague(cfg, S.base);
       S.phase = 'ready';
       S.weekIdx = pickWeekIndex(S.base);
-      if (S.view !== 'week') ensureLeague();
+      if (S.view === 'bets') { if (betsView) betsView.ensure(); } else if (S.view !== 'week') ensureLeague();
       render();
       await loadWeekAt(S.weekIdx);
     } catch (err) {
@@ -1740,6 +1748,11 @@
   }
 
   app.addEventListener('click', (e) => {
+    if (S.view === 'bets' && betsView) {
+      if (betsView.onClick(e)) return;
+      const r = e.target.closest('[data-act="refresh"]');
+      if (r && app.contains(r)) return betsView.ensure(true);
+    }
     const t = e.target.closest('[data-act]');
     if (t && app.contains(t)) {
       const act = t.dataset.act;
@@ -1771,6 +1784,7 @@
   app.addEventListener('change', (e) => {
     const t = e.target;
     if (!t || !t.matches) return;
+    if (S.view === 'bets' && betsView && betsView.onChange(e)) return;
     if (t.matches('select[data-act="week"]')) loadWeekAt(clamp(parseInt(t.value, 10) || 0, 0, S.base.weeks.length - 1));
     else if (t.matches('select[data-act="league"]')) switchLeague(t.value);
     else if (t.matches('select[data-act="trade-team"]')) { S.trade = { team: t.value || null, give: new Set(), get: new Set() }; renderAnalyzer(); }
@@ -1780,6 +1794,8 @@
       renderTradeResult();
     }
   });
+
+  app.addEventListener('input', (e) => { if (S.view === 'bets' && betsView) betsView.onInput(e); });
 
   app.addEventListener('submit', async (e) => {
     const form = e.target.closest('form[data-form="setup"]');

@@ -37,9 +37,7 @@ Ran the bundled `factors.js + model.js + insights.js + espn.js` inside the logge
 
 1. Done Oct 29: cookies saved through the setup screen; `--check` OK, `node tools/digest.js` and all five
    views work on live data through the local server.
-2. Create the private GitHub repo and push. `gh` is not installed on this PC:
-   `winget install GitHub.cli`, `gh auth login`, then
-   `gh repo create Thanos418/fantasy-week-planner --private --source=. --push`.
+2. Done Nov 17: the code is on GitHub, https://github.com/Thanos418/FantasyCheatCode (`main`).
 
 ## State (Nov 9 2026)
 
@@ -48,6 +46,14 @@ Since the notes above: several leagues, pending claims, IR slots, long-term valu
 return dates, the week plan and the redesigned week view. Nov 10: the add limit is a weekly budget (it
 was wrongly treated as one a day), claims say when to enter them, and players coming off IR are plan
 steps. `node --test` passes (120 tests). SPEC.md "Phase 3" has the contracts.
+
+## State (Nov 17 2026)
+
+The Bets view (`#bets`): tonight's player props at Betano and Betclic, priced against DraftKings' line
+(through ESPN) with its margin removed and a per-stat over correction; research for every pick. SPEC.md
+"Phase 4" has the contracts, README the backtest. `node --test` passes (141 tests).
+`node tools/backtest_props.js` reproduces the numbers; `node tools/build_stat_factors.js` refreshes the
+defence factors (weekly). The local server must be restarted once for the new `/odds/*` routes.
 
 ## Backtest
 
@@ -62,3 +68,8 @@ with an error if its per-game recipe stops matching `WPModel.projectPlayer`, so 
 - A free agent whose team has no game left this week is never suggested, even as a long-term pickup.
 - ESPN may refuse adds while a player who is no longer Out sits in an IR slot; the app does not know.
 - ESPN's return dates cannot be backtested; `BACK_PLAY` (0.75) is a judgement, not a fitted value.
+- Long-term value multiplies by the share of team games played this season, which counts a long injury
+  twice (it already counts from the return date): Lively 0 of 11 → 40%, Duren 2 of 10 → 53%.
+- Bets: Betclic's rebounds and assists load over a socket inside its page; only points and PRA are read.
+- Bets: Betano and Betclic keep no price history, so the value they offer cannot be backtested. Logging
+  each night's picks and their results would build that record.

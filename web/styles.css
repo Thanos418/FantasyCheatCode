@@ -793,3 +793,135 @@ body {
   #app .wp-pastrow { grid-template-columns: repeat(auto-fill, minmax(132px, 1fr)); }
   #app .wp-plan-sum .wp-nums dd { font-size: 26px; }
 }
+
+/* ------------------------------------------------------------------ Bets */
+
+#app .wpb-head .wp-sec-h { margin-bottom: 10px; }
+#app .wpb-days { display: inline-flex; padding: 3px; border: 1px solid var(--line); border-radius: 999px; background: var(--surface); }
+#app .wpb-seg { min-height: 32px; padding: 0 14px; border: 0; border-radius: 999px; background: transparent; color: var(--ink-2); font: inherit; font-size: 13px; font-weight: 600; cursor: pointer; }
+#app .wpb-seg.is-on { background: var(--ink); color: var(--surface); }
+#app .wpb-seg:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+#app .wpb-src { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; font-size: 12px; color: var(--ink-2); }
+#app .wpb-srcchip { display: inline-flex; gap: 5px; align-items: baseline; padding: 3px 9px; border: 1px solid var(--line); border-radius: 999px; background: var(--surface); }
+#app .wpb-srcchip b { color: var(--ink); font-weight: 600; }
+#app .wpb-srcchip::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--good); align-self: center; }
+#app .wpb-srcchip.is-off::before { background: var(--muted); }
+#app .wpb-srcchip.is-off { color: var(--muted); }
+#app .wpb-at { margin-left: auto; color: var(--muted); }
+#app .wpb-spin { width: 26px; height: 26px; border: 3px solid var(--line); border-top-color: var(--go); border-radius: 50%; animation: wp-rot 0.9s linear infinite; }
+
+#app .wpb-gamesec { margin-top: 18px; }
+#app .wpb-games { display: flex; gap: 10px; margin: 0; padding: 2px 2px 8px; list-style: none; overflow-x: auto; scroll-snap-type: x proximity; }
+#app .wpb-game { flex: 0 0 auto; min-width: 168px; padding: 10px 12px; border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--surface); box-shadow: var(--shadow); scroll-snap-align: start; }
+#app .wpb-game.is-live { border-style: dashed; }
+#app .wpb-gteams { display: flex; align-items: baseline; gap: 6px; font-family: var(--display); font-size: 22px; font-weight: 800; letter-spacing: 0.02em; line-height: 1; }
+#app .wpb-gteams span { font-size: 14px; color: var(--muted); }
+#app .wpb-gmeta, #app .wpb-gimp, #app .wpb-gb2b { margin-top: 4px; font-size: 12px; color: var(--ink-2); font-variant-numeric: tabular-nums; }
+#app .wpb-gimp { color: var(--muted); }
+#app .wpb-gb2b { color: var(--go-ink); }
+
+#app .wpb-filters { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 18px; padding: 12px; border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--surface); }
+#app .wpb-f { display: flex; flex-direction: column; gap: 3px; min-width: 0; font-size: 11px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: var(--muted); }
+#app .wpb-f select, #app .wpb-f input { min-height: 36px; padding: 0 10px; border: 1px solid var(--line); border-radius: var(--r); background: var(--bg); color: var(--ink); font: inherit; font-size: 14px; letter-spacing: 0; text-transform: none; }
+#app .wpb-f select:focus-visible, #app .wpb-f input:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
+#app .wpb-q { flex: 1 1 180px; }
+#app .wpb-num input { width: 92px; font-variant-numeric: tabular-nums; }
+
+#app .wpb-picks { margin-top: 26px; }
+#app .wpb-list { display: flex; flex-direction: column; gap: 8px; margin: 0; padding: 0; list-style: none; }
+#app .wpb-card { border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--surface); box-shadow: var(--shadow); overflow: hidden; }
+#app .wpb-card.is-value { border-left: 4px solid var(--good); }
+#app .wpb-cardbtn { display: grid; grid-template-columns: 76px minmax(0, 1fr) auto auto 18px; align-items: center; gap: 14px; width: 100%; padding: 12px 14px; border: 0; background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+#app .wpb-cardbtn:hover { background: var(--hover); }
+#app .wpb-cardbtn:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
+#app .wpb-ev { display: flex; flex-direction: column; align-items: flex-start; }
+#app .wpb-ev b { font-family: var(--display); font-size: 24px; font-weight: 800; line-height: 1; color: var(--ink-2); font-variant-numeric: tabular-nums; }
+#app .wpb-card.is-value .wpb-ev b { color: var(--good); }
+#app .wpb-ev small { font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); }
+#app .wpb-what { display: flex; flex-direction: column; min-width: 0; }
+#app .wpb-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#app .wpb-bet { font-size: 14px; }
+#app .wpb-bet b { font-weight: 500; }
+#app .wpb-ctx { font-size: 12px; color: var(--muted); }
+#app .wpb-inj { margin-left: 6px; padding: 0 5px; border-radius: 4px; background: var(--go-soft); color: var(--go-ink); font-size: 10px; font-weight: 700; vertical-align: 2px; }
+#app .wpb-price { display: flex; flex-direction: column; align-items: flex-end; font-variant-numeric: tabular-nums; }
+#app .wpb-book { font-size: 11px; font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase; color: var(--ink-2); }
+#app .wpb-dec { font-family: var(--display); font-size: 26px; font-weight: 800; line-height: 1; }
+#app .wpb-price small { font-size: 11px; color: var(--muted); }
+#app .wpb-stake { min-width: 86px; padding: 4px 8px; border-radius: 999px; background: var(--bg); font-size: 12px; font-weight: 600; text-align: center; color: var(--ink-2); }
+#app .wpb-card.is-value .wpb-stake { background: color-mix(in srgb, var(--good) 14%, transparent); color: var(--good); }
+#app .wpb-chev { width: 16px; height: 16px; color: var(--muted); transition: transform 0.18s ease; }
+#app .wpb-card.is-open .wpb-chev { transform: rotate(180deg); }
+#app .wpb-more { display: flex; justify-content: center; margin-top: 12px; }
+
+#app .wpb-deep { padding: 4px 14px 14px; border-top: 1px solid var(--line); background: color-mix(in srgb, var(--bg) 55%, var(--surface)); animation: wpb-in 0.2s ease; }
+@keyframes wpb-in { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
+#app .wpb-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-top: 12px; }
+#app .wpb-block { min-width: 0; padding: 12px; border: 1px solid var(--line); border-radius: var(--r); background: var(--surface); }
+#app .wpb-block h3 { margin: 0 0 8px; font-family: var(--display); font-size: 16px; font-weight: 800; letter-spacing: 0.04em; text-transform: uppercase; }
+#app .wpb-block h4 { margin: 10px 0 4px; font-size: 12px; font-weight: 600; color: var(--ink-2); }
+#app .wpb-note { margin: 8px 0 0; font-size: 12px; color: var(--ink-2); }
+#app .wpb-disclaim { margin: 12px 2px 0; font-size: 12px; color: var(--muted); }
+#app .wpb-table { width: 100%; border-collapse: collapse; font-size: 13px; font-variant-numeric: tabular-nums; }
+#app .wpb-table th { padding: 4px 6px; border-bottom: 1px solid var(--line); font-size: 11px; font-weight: 600; text-align: left; color: var(--muted); }
+#app .wpb-table td { padding: 5px 6px; border-bottom: 1px solid var(--line); }
+#app .wpb-table td small { display: block; font-size: 10px; color: var(--muted); }
+#app .wpb-table td.is-pos small, #app .wpb-ladder .is-pos { color: var(--good); font-weight: 600; }
+#app .wpb-table td.is-me { box-shadow: inset 0 0 0 2px var(--go); border-radius: 4px; }
+#app .wpb-fair { color: var(--ink-2); }
+#app .wpb-ladder { display: flex; flex-wrap: wrap; gap: 4px 6px; margin: 8px 0 0; font-size: 12px; font-variant-numeric: tabular-nums; }
+#app .wpb-ladder b { flex-basis: 100%; font-weight: 600; color: var(--ink-2); }
+#app .wpb-ladder span { padding: 1px 6px; border: 1px solid var(--line); border-radius: 4px; }
+#app .wpb-ladder span.is-far { opacity: 0.5; }
+#app .wpb-ladder span.is-me { border-color: var(--go); }
+#app .wpb-svg { display: block; width: 100%; height: auto; }
+#app .wpb-b-win { fill: var(--good); }
+#app .wpb-b-lose { fill: var(--line); }
+#app .wpb-mark { stroke: var(--go); stroke-width: 2; }
+#app .wpb-mark--h { stroke-dasharray: 4 3; }
+#app .wpb-axis { fill: var(--muted); font-size: 9px; text-anchor: middle; font-family: var(--sans); }
+#app .wpb-axis--min { font-size: 8px; }
+#app .wpb-val { fill: var(--ink-2); font-size: 9px; font-weight: 600; text-anchor: middle; font-family: var(--sans); }
+#app .wpb-hits { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0 0; padding: 0; list-style: none; }
+#app .wpb-hits li { display: flex; flex-direction: column; min-width: 64px; padding: 5px 8px; border: 1px solid var(--line); border-radius: var(--r); font-size: 11px; color: var(--muted); }
+#app .wpb-hits b { font-family: var(--display); font-size: 18px; font-weight: 800; color: var(--ink); }
+#app .wpb-why, #app .wpb-ranks, #app .wpb-without, #app .wpb-parts { margin: 0; padding: 0; list-style: none; font-size: 13px; }
+#app .wpb-why li { display: flex; gap: 8px; padding: 4px 0; border-bottom: 1px dashed var(--line); }
+#app .wpb-why li span { flex: 0 0 18px; height: 18px; border-radius: 50%; font-weight: 700; line-height: 18px; text-align: center; }
+#app .wpb-why li.is-for span { background: color-mix(in srgb, var(--good) 18%, transparent); color: var(--good); }
+#app .wpb-why li.is-against span { background: color-mix(in srgb, var(--bad) 16%, transparent); color: var(--bad); }
+#app .wpb-ranks li { display: flex; align-items: center; gap: 8px; padding: 3px 0; }
+#app .wpb-rank { flex: 0 0 auto; min-width: 36px; padding: 1px 6px; border-radius: 4px; background: var(--bg); font-weight: 700; font-size: 12px; text-align: center; }
+#app .wpb-rank.is-soft { background: color-mix(in srgb, var(--good) 16%, transparent); color: var(--good); }
+#app .wpb-rank.is-hard { background: color-mix(in srgb, var(--bad) 14%, transparent); color: var(--bad); }
+#app .wpb-without li, #app .wpb-parts li { padding: 2px 0; color: var(--ink-2); }
+#app .wpb-proj { margin: 0 0 6px; }
+#app .wpb-proj b { font-family: var(--display); font-size: 26px; font-weight: 800; }
+
+#app .wpb-check { margin-top: 32px; }
+#app .wpb-form { display: flex; flex-wrap: wrap; gap: 10px; padding: 12px; border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--surface); }
+#app .wpb-checkout { margin-top: 10px; font-size: 14px; font-variant-numeric: tabular-nums; }
+#app .wpb-checkout p { margin: 0 0 4px; }
+#app .wpb-checkout .is-pos b { color: var(--good); }
+#app .wpb-checkout .is-neg b { color: var(--bad); }
+#app .wpb-dim { color: var(--muted); }
+#app .wpb-foot p { margin-bottom: 8px; }
+
+@media (max-width: 720px) {
+  #app .wpb-grid { grid-template-columns: minmax(0, 1fr); }
+  #app .wpb-cardbtn { grid-template-columns: 58px minmax(0, 1fr) auto; grid-template-areas: "ev what price" "ev stake chev"; gap: 4px 10px; padding: 10px 12px; }
+  #app .wpb-ev { grid-area: ev; }
+  #app .wpb-what { grid-area: what; }
+  #app .wpb-price { grid-area: price; }
+  #app .wpb-stake { grid-area: stake; justify-self: start; min-width: 0; }
+  #app .wpb-chev { grid-area: chev; justify-self: end; }
+  #app .wpb-ev b { font-size: 20px; }
+  #app .wpb-dec { font-size: 22px; }
+  #app .wpb-at { margin-left: 0; flex-basis: 100%; }
+  #app .wpb-f { flex: 1 1 140px; }
+  #app .wpb-num { flex: 0 1 92px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  #app .wpb-deep { animation: none; }
+  #app .wpb-chev { transition: none; }
+}

@@ -544,3 +544,67 @@ dates, which ESPN does not keep for past seasons.
 - The view is in the address (`#trades`); the tabs stay at the top while scrolling; a button cycles the
   theme (system, light, dark; `wp:theme` in localStorage, `data-theme` on `<html>`).
 - Section titles use the display face in capitals; a new week or view plays a short entrance once.
+
+
+---
+
+# Phase 4 — the Bets view (Nov 17 2026)
+
+Player props for one night, priced against DraftKings. Fitted and tested with `tools/backtest_props.js`.
+
+## Sources (server.py, `/odds/*`, no cookies to any of them)
+
+| Route | Upstream | Cache |
+|---|---|---|
+| `/odds/scoreboard?date=YYYYMMDD` | `site.api.espn.com/.../nba/scoreboard` (DraftKings total and spread for games not yet played) | 2 min; 30 days for past dates |
+| `/odds/props?event=ID` | `sports.core.api.espn.com/.../events/ID/competitions/ID/odds/100/propBets?limit=1000&pageSize=1000&page=N`, pages merged, slimmed | 2 min |
+| `/odds/gamelogs?season=&ids=` | `site.web.api.espn.com/.../athletes/ID/gamelog?season=`, 8 in parallel, slimmed | 30 min; 30 days for past seasons |
+| `/odds/players?season=&ids=` | fantasy `leaguedefaults/3?view=kona_player_info` with `filterIds` (a `limit` needs a sort) | 30 min |
+| `/odds/betano`, `/odds/betano/event?path=/odds/<slug>/<id>/` | `www.betano.pt/api/...` (`?bt=1` is the players tab) | 2 min |
+| `/odds/betclic`, `/odds/betclic/event?path=/basquetebol-sbasketball/nba-c13/<slug>-m<id>` | the page's `<script id="ng-state">` (gRPC answers), extracted server-side | 2 min |
+
+ESPN propBets items carry no side: the two items of an over/under come over first. Milestones ("25+") at
+`line + 0.5` confirm the order. Ladders for other periods come under the same milestone type, as a second
+run of rungs; the run that agrees with the main line is kept. Finished games keep their closing props for
+the season in progress only; finished scoreboards drop their odds, but `.../competitions/ID/odds` keeps them.
+
+## web/bets.js (`WPBets`, pure)
+
+- Markets `pts reb ast tpm stl blk pr pa ra pra`; `statOf(row, m)`.
+- `normGamelog(raw)` → regular-season games he played, oldest first: `{ id, t, date (ET), team, opp, home,
+  min, pts, reb, ast, tpm, tpa, stl, blk, tov, fgm, fga, ftm, fta }`.
+- `projector(prevRows, P, posRates)`: `.push(row)`, `.base()` → `{ min, rate }` (per minute). Rates: games
+  weighted by `0.5^(age/halfLife)`, last season as `priorGames` games of its minutes. Minutes likewise
+  with `minHalfLife`, `priorMinGames`. Rookies: position rates as `rookieGames` games.
+- `project(base, ctx, F, P, grp)` → `{ min, blow, mu: {market: mean}, factors, rate }`. Per stat:
+  `opp^alpha × venue × b2b × (total / avgTotal)^beta`; minutes cut by `gamma` per point of spread beyond
+  `blowFrom` for players projected `blowMin`+ minutes.
+- `buildStatFactors(players, opts)`, `factorSums`, `factorsFromSums(last, cur, opts)`: per stat, per position
+  group (G, F, C), per opponent: actual over the player's season average, shrunk by 100 player-games, moved
+  towards this season's by 50. `oppRank(F, s, grp, team)` (1 = gives up the most).
+- `dist(mu, [a, b, c])`: negative binomial, variance `a·mu + b·mu²`; `atLeast(k)` and `line(L)` cut rungs above
+  the mean by `c` per standard deviation (`pmf` is uncut). `impliedMean(line, pOver, d)`.
+- `price({ m, books: [{ book, mk }], muModel, P })`: the first book with an over/under (DraftKings) anchors:
+  devig, minus `overShift[m]`, implied mean; final mean = market + `weight[m]` × (model − market). Every bet:
+  `{ book, side over|under|atleast, line, dec, p, ev, kelly, suspect (p − 1/dec > 0.2), far (> 1.25 sd) }`.
+- `buildBoard(night, F, P)` → `{ lines, picks }`: picks without suspect or far bets, by EV.
+- `analysis({ rows, prevRows, m, line, ctx, F, grp, mates })`: hit rates, last 10 games, minutes and shots,
+  opponent ranks, splits without each teammate out. `reasons(...)` → `[{ w, good, t }]`.
+- Parsers: `parseEspnProps`, `parseBetanoLeague/Event`, `parseBetclicLeague/Event`, `parseScoreboard`,
+  `parseInjuryList`; `matchGame` (team nicknames), `matchPlayers` (normalised names, then last name + initial).
+
+## Fitted values (DEFAULTS)
+
+Projection on 2025-26: halfLife 25, minHalfLife 3, priorGames 8, priorMinGames 1; alpha 0.5 (blocks 1),
+beta 0.25 to 1 by stat, gamma 0.005 beyond 10 points. Market, 16,146 DraftKings closing lines
+(21 Oct to 16 Nov 2026): spread and tail cut per market, `overShift` per market (0 to 4 points), `weight`
+0 except rebounds 0.1 (the only stat where the blend was not worse than the corrected market out of sample).
+
+## web/odds.js (`WPOdds`), web/bets-view.js (`WPBetsView`)
+
+- `WPOdds.create({ fetch?, base? }).loadNight(date, { season, progress })` → `{ date, season, games (each with
+  books.DraftKings / Betano / Betclic and b2b), players (rows, prev, grp, injury), out, errors, loadedAt }`.
+  One retry on a network error; a book that fails is in `errors` and the rest loads.
+- `WPBetsView.create({ esc, season, rerender })` → `{ ensure(force), html(), onClick, onChange, onInput, busy }`.
+  app.js calls them for `#bets`; filters and the open cards redraw only the list (`#wpb-list`), the check
+  form only its answer. Filters persist in `localStorage['wp:bets']`.
