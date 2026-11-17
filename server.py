@@ -55,6 +55,11 @@ ODDS_TTL = 120  # seconds: lines move
 GAMELOG_TTL = 1800  # the season in progress
 PAST_TTL = 30 * 24 * 3600  # finished games and seasons
 MAX_IDS = 400
+
+# The Bets track record (web/picklog.js): personal, kept next to config.json and out of git.
+PICKS_PATH = os.path.join(BASE_DIR, "data", "picks.json")
+PICKS_MAX_BODY = 2 * 1024 * 1024
+_picks_lock = threading.Lock()
 DEFAULT_LEAGUE_ID = 1257343892
 DEFAULT_PORT = 8765
 USER_AGENT = (
@@ -687,6 +692,40 @@ def odds_get(sub, q):
     raise EspnError(404, "not_found", "Unknown odds address.")
 
 
+class PicksError(Exception):
+    pass
+
+
+def load_picks():
+    """{"version": 1, "picks": {id: record}}. A file that cannot be read is an error, never an empty
+    log: saving over it would lose the track record."""
+    try:
+        with open(PICKS_PATH, encoding="utf-8") as f:
+            data = json.load(f)
+    except FileNotFoundError:
+        return {"version": 1, "picks": {}}
+    except (OSError, ValueError) as e:
+        raise PicksError("data/picks.json could not be read (%s). Fix or move it; nothing was changed." % e.__class__.__name__)
+    if not isinstance(data, dict) or not isinstance(data.get("picks"), dict):
+        raise PicksError("data/picks.json is not a track record. Fix or move it; nothing was changed.")
+    return data
+
+
+def save_picks(upsert, remove):
+    with _picks_lock:
+        data = load_picks()
+        for rec in upsert:
+            data["picks"][rec["id"]] = rec
+        for pid in remove:
+            data["picks"].pop(pid, None)
+        os.makedirs(os.path.dirname(PICKS_PATH), exist_ok=True)
+        tmp = "%s.%d.tmp" % (PICKS_PATH, threading.get_ident())
+        with open(tmp, "w", encoding="utf-8", newline="\n") as f:
+            json.dump(data, f, ensure_ascii=False, separators=(",", ":"))
+        os.replace(tmp, PICKS_PATH)
+        return len(data["picks"])
+
+
 # --------------------------------------------------------------------------
 # HTTP handler
 # --------------------------------------------------------------------------
@@ -783,6 +822,19 @@ class Handler(BaseHTTPRequestHandler):
                 return
             self._proxy("injuries", "", public_url=INJURY_URL)
             return
+        if path == "/picks":
+            if not self._guard_api():
+                return
+            if self.command == "POST":
+                self._post_picks()
+            elif self.command in ("GET", "HEAD"):
+                try:
+                    self._json(200, load_picks())
+                except PicksError as e:
+                    self._error(500, "picks_unreadable", str(e))
+            else:
+                self._error(405, "method_not_allowed", "Use GET or POST.")
+            return
         if path.startswith("/odds/"):
             if self.command not in ("GET", "HEAD"):
                 self._error(405, "method_not_allowed", "Use GET.")
@@ -836,6 +888,39 @@ class Handler(BaseHTTPRequestHandler):
             return
         say("[%s] config.json saved (league %s)" % (datetime.now().strftime("%H:%M:%S"), load_config()["leagueId"]))
         self._json(200, public_config(load_config()))
+
+    # ---- /picks ----
+    def _post_picks(self):
+        try:
+            length = int(self.headers.get("Content-Length") or "0")
+        except ValueError:
+            length = -1
+        if length <= 0 or length > PICKS_MAX_BODY:
+            self._error(400, "bad_request", "Send a JSON body (up to 2 MB).")
+            return
+        try:
+            body = json.loads(self.rfile.read(length).decode("utf-8-sig"))
+            upsert = body.get("upsert") or []
+            remove = body.get("remove") or []
+            if not isinstance(upsert, list) or not isinstance(remove, list):
+                raise ValueError("lists expected")
+            for rec in upsert:
+                if not isinstance(rec, dict) or not isinstance(rec.get("id"), str) or not 0 < len(rec["id"]) <= 300:
+                    raise ValueError("every record needs a string id")
+            if not all(isinstance(x, str) for x in remove):
+                raise ValueError("remove takes ids")
+        except Exception:
+            self._error(400, "bad_request", 'Body must be {"upsert": [records with an id], "remove": [ids]}.')
+            return
+        try:
+            count = save_picks(upsert, remove)
+        except PicksError as e:
+            self._error(500, "picks_unreadable", str(e))
+            return
+        except OSError as e:
+            self._error(500, "write_failed", "Could not write data/picks.json: %s" % e.strerror)
+            return
+        self._json(200, {"ok": True, "count": count})
 
     # ---- /espn ----
     def _proxy(self, rest, query, public_url=None):

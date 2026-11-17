@@ -55,6 +55,11 @@ The Bets view (`#bets`): tonight's player props at Betano and Betclic, priced ag
 `node tools/backtest_props.js` reproduces the numbers; `node tools/build_stat_factors.js` refreshes the
 defence factors (weekly). The local server must be restarted once for the new `/odds/*` routes.
 
+Nov 17, later: the track record. Value picks are logged to `data/picks.json` when the Bets view loads a
+night (21 the first night), graded the day after with closing-line value; "I placed this" records your
+stake. `node tools/picks.js [log]` does the same from the command line or a scheduled task (not set up).
+`node --test` passes (148 tests).
+
 ## Backtest
 
 `node tools/backtest.js` drives web/model.js and web/insights.js on 2024-25 and 2025-26 (see README). It stops
@@ -71,5 +76,7 @@ with an error if its per-game recipe stops matching `WPModel.projectPlayer`, so 
 - Long-term value multiplies by the share of team games played this season, which counts a long injury
   twice (it already counts from the return date): Lively 0 of 11 → 40%, Duren 2 of 10 → 53%.
 - Bets: Betclic's rebounds and assists load over a socket inside its page; only points and PRA are read.
-- Bets: Betano and Betclic keep no price history, so the value they offer cannot be backtested. Logging
-  each night's picks and their results would build that record.
+- Bets: Betano and Betclic keep no price history, so the value they offer cannot be backtested; the track
+  record (from Nov 17) is building that evidence. Judge it by closing-line value first, results later.
+- Bets: a night is logged only if the view is opened or `tools/picks.js log` runs; without the local
+  server Betano refuses the script's requests.

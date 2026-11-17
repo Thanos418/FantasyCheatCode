@@ -608,3 +608,29 @@ beta 0.25 to 1 by stat, gamma 0.005 beyond 10 points. Market, 16,146 DraftKings 
 - `WPBetsView.create({ esc, season, rerender })` → `{ ensure(force), html(), onClick, onChange, onInput, busy }`.
   app.js calls them for `#bets`; filters and the open cards redraw only the list (`#wpb-list`), the check
   form only its answer. Filters persist in `localStorage['wp:bets']`.
+
+## Track record (web/picklog.js `WPPicks`, `/picks`, tools/picks.js)
+
+- Record: `{ id: date|event|athlete|market|book|side|line, date, event, start, athlete, name, team, opp, m,
+  book, side, line, flagged, first, last, placed?, result?, close? }`; `first`/`last` =
+  `{ at, dec, p, ev, dk: { line, over, under } }`; `placed = { stake, dec, at }`;
+  `result = { outcome win|loss|push|void, v, at }`; `close = { line, over, under, p, clv }`.
+- `fromBoard(board, night, now)`: value picks (ev > 0) at Betano or Betclic, game not started → records with
+  `flagged: true`. `merge(log, recs)` adds new ones, refreshes `last` when the price or edge moved (or every
+  30 minutes), flags a placed bet that turns up as value, never touches a graded record; returns what changed.
+- `grade(rec, rows, closeBook, P, now)`: the stat from his game log row for that event; no row → void only if
+  his log has a later game or two days have passed, else null (try again); rows null (log unreadable) → null.
+  Closing-line value: `price()` on DraftKings' closing over/under alone (ladders ignored), the bet's chance
+  `p` at the logged odds, `clv = p × first.dec − 1`.
+- `summary(log)` → `{ all, byBook, byStat, bySide, series, placed, recent }`; units at 1 a pick at `first.dec`,
+  return with standard error, expected = sum of `first.ev`, average closing-line value with standard error;
+  placed bets in euros at `placed.dec`.
+- Server: `GET /picks` → `{ version: 1, picks: { id: record } }` from `data/picks.json` (an unreadable file is a
+  500, never treated as empty); `POST /picks` `{ upsert: [records], remove: [ids] }` (2 MB at most), atomic
+  write under a lock. `data/` is in `.gitignore`.
+- `WPOdds.create({ direct: true })` asks the public addresses itself (Node); `loadResults(picks, season)` →
+  `{ rows: { athlete: games | null }, closes: { event: DraftKings book | null } }`. Betano answers 403 to
+  Node's own requests; tools/picks.js uses the local server when `GET /picks` answers, else direct.
+- Bets view: a night that loads is logged at once (`logBoard`); "Track record" grades what finished
+  (nights before today, ET) when it opens and at most every 5 minutes after; "I placed this" in a pick's
+  card stores the stake (remove: unplaced, or deleted if it was never a value pick).

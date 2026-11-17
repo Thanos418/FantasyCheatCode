@@ -48,6 +48,28 @@ The Bets view lists every player prop for tonight's games (or tomorrow's) at Bet
 
 The research is there to read, not to bet on: in the backtest neither our projections nor matchup or hit-rate rules beat DraftKings' closing line (see Backtest). Our projection moves the fair price only for rebounds, the one stat where it held its own out of sample.
 
+#### Track record
+
+Every value pick the view shows at Betano or Betclic goes into a track record the moment it appears, with its price and edge then (and its latest price until tip-off). The day after, each pick is graded from the box score (won, lost, push, or void when he did not play) and priced against DraftKings' closing line. **Track record** (next to Tonight and Tomorrow) shows:
+
+- profit at one unit a pick, the return with its 95% range, and what the edges promised when the picks were logged;
+- closing-line value: what each pick was worth at DraftKings' closing price after the same corrections. Results need hundreds of bets to mean much; a positive average here shows an edge much sooner;
+- breakdowns by book, stat and kind of bet, a running total by night, and every pick;
+- **your bets**: open a pick, enter your stake and press "I placed this"; they are counted in euros, at the price you took.
+
+The record lives in `data/picks.json` (kept out of git). Picks are logged when the view loads a night, so a night you never open is missing. To log every night anyway, run the command-line version from a scheduled task, after DraftKings has its lines and before the first game (23:00 in Lisbon works):
+
+```
+node tools/picks.js            # grade what finished and print the track record
+node tools/picks.js log        # log tonight's value picks first
+```
+
+```
+schtasks /Create /TN "FantasyCheatCode picks" /SC DAILY /ST 23:00 /TR "node C:\Users\olive\Downloads\fantasy-week-planner\tools\picks.js log"
+```
+
+It goes through the local server when it is running. Without it, it reads the sources itself, and Betano refuses those requests, so that night has Betclic's picks only. Grading needs only ESPN.
+
 Betano and Betclic have no public API. The local server reads Betano's own JSON pages and the odds Betclic embeds in its game pages, no more often than every two minutes, without cookies. Betclic's rebounds and assists only load inside its live page, so from Betclic the view has points and PRA. Either site can change its pages or block the requests; the view then says so and carries on with the others.
 
 ## Requirements
@@ -234,7 +256,7 @@ node --test
 
 | Path | What it is |
 |---|---|
-| `server.py` | Local server: static files, `/config`, a proxy to the ESPN API with your cookies, ESPN's public injury report, and `/odds/*` for the Bets view (no cookies). |
+| `server.py` | Local server: static files, `/config`, a proxy to the ESPN API with your cookies, ESPN's public injury report, `/odds/*` for the Bets view (no cookies), and `/picks` for its track record (`data/picks.json`). |
 | `config.example.json` | Template for `config.json`. |
 | `start.bat`, `start.sh` | Launchers for Windows and macOS/Linux. |
 | `web/index.html` | Page shell. |
@@ -251,6 +273,8 @@ node --test
 | `web/statfactors.js` | Defence by stat and position, generated. |
 | `tools/build_stat_factors.js` | Rebuilds `web/statfactors.js`. |
 | `tools/backtest_props.js`, `tools/props_data.js` | The Bets backtest and its data. |
+| `web/picklog.js` | The Bets track record: logging, grading, closing-line value, summary. |
+| `tools/picks.js` | The track record from the command line (`node tools/picks.js [log]`). |
 | `tools/build_factors.py` | Rebuilds `web/factors.js` from public ESPN game logs. |
 | `tools/backtest.js` | Replays past seasons through the app's code (`node tools/backtest.js`). |
 | `tools/digest.js` | Daily digest for the command line or a scheduled task (`node tools/digest.js`). |

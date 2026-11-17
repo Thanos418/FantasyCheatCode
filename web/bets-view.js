@@ -31,18 +31,69 @@
     const esc = opts.esc;
     const saved = store.get('wp:bets') || {};
     const S = {
+      mode: saved.mode === 'record' ? 'record' : 'night',
       day: saved.day === 'tomorrow' ? 'tomorrow' : 'today',
+      log: null, logged: 0, logError: null, stake: saved.stake || '',
+      rec: { loading: false, error: null, msg: '', filter: 'value', shown: 40, at: 0 },
       f: Object.assign({ book: 'pt', stat: 'all', kind: 'all', minP: 0, q: '' }, saved.f || {}),
       night: null, board: null, date: null, loading: false, error: null, msg: '', token: 0,
       open: new Set(), shown: PAGE, memo: {},
       check: { pid: '', m: 'pts', side: 'over', line: '', dec: '' },
     };
     if (!BOOKS[S.f.book]) S.f.book = 'pt';
-    const keep = () => store.set('wp:bets', { day: S.day, f: { book: S.f.book, stat: S.f.stat, kind: S.f.kind, minP: S.f.minP } });
+    const keep = () => store.set('wp:bets', { mode: S.mode, day: S.day, stake: S.stake, f: { book: S.f.book, stat: S.f.stat, kind: S.f.kind, minP: S.f.minP } });
     const rerender = () => opts.rerender();
     const dateFor = (day) => (day === 'tomorrow' ? addDays(etToday(), 1) : etToday());
+    let _client = null;
+    const client = () => (_client = _client || root.WPOdds.create({}));
+    const P = () => root.WPPicks;
+    const seasonOf = (date) => (+date.slice(5, 7) >= 8 ? +date.slice(0, 4) + 1 : +date.slice(0, 4));
+
+    // Value picks go into the track record (data/picks.json on the local server) as soon as they show.
+    async function logBoard() {
+      if (!P() || !S.board) return;
+      try {
+        if (!S.log) S.log = await client().picks.load();
+        const changed = P().merge(S.log, P().fromBoard(S.board, S.night, Date.now()));
+        if (changed.length) await client().picks.save(changed);
+        S.logged = Object.keys(S.log).filter((k) => S.log[k].flagged && S.log[k].date === S.date).length;
+        S.logError = null;
+      } catch (e) {
+        S.logError = e.message || String(e);
+      }
+    }
+
+    // The track record: load it, grade what finished, show it.
+    async function ensureRecord(force) {
+      if (S.rec.loading || (!force && S.log && Date.now() - S.rec.at < 5 * 60 * 1000)) return;
+      S.rec.loading = true; S.rec.error = null; S.rec.msg = 'Reading the track record…';
+      rerender();
+      try {
+        if (!P() || !root.WPOdds) throw new Error('picklog.js or odds.js did not load. Make sure they sit next to index.html, then reload.');
+        S.log = await client().picks.load();
+        const todo = P().ungraded(S.log, etToday());
+        const seasons = {};
+        todo.forEach((r) => { (seasons[seasonOf(r.date)] = seasons[seasonOf(r.date)] || []).push(r); });
+        for (const season of Object.keys(seasons)) {
+          S.rec.msg = 'Grading ' + todo.length + ' finished picks…';
+          const el = document.getElementById('wpb-msg');
+          if (el) el.textContent = S.rec.msg;
+          const { rows, closes } = await client().loadResults(seasons[season], +season);
+          const graded = seasons[season].map((r) => P().grade(r, rows[r.athlete], closes[r.event], B().DEFAULTS, Date.now())).filter(Boolean);
+          graded.forEach((g) => { S.log[g.id] = g; });
+          if (graded.length) await client().picks.save(graded);
+        }
+        S.rec.at = Date.now();
+      } catch (e) {
+        if (root.console) console.error(e);
+        S.rec.error = e;
+      }
+      S.rec.loading = false;
+      rerender();
+    }
 
     async function ensure(force) {
+      if (S.mode === 'record') return ensureRecord(force);
       const want = dateFor(S.day);
       if (S.loading || (S.board && !force && S.date === want)) return;
       const my = ++S.token;
@@ -58,6 +109,7 @@
         S.night = night;
         S.board = B().buildBoard(night, root.WPStatFactors || null);
         S.date = night.date; S.memo = {}; S.shown = PAGE;
+        await logBoard();
       } catch (e) {
         if (my !== S.token) return;
         if (root.console) console.error(e);
@@ -84,12 +136,14 @@
     /* ------------------------------------------------------------- render */
 
     function html() {
-      return '<div class="wp-view wpb">' + headHTML() + bodyHTML() + '</div>';
+      return '<div class="wp-view wpb">' + headHTML() + (S.mode === 'record' ? recordHTML() : bodyHTML()) + '</div>';
     }
 
     function headHTML() {
-      const n = S.night;
-      const dayBtn = (d, l) => '<button type="button" class="wpb-seg' + (S.day === d ? ' is-on' : '') + '" data-bact="day" data-day="' + d + '" aria-pressed="' + (S.day === d) + '">' + l + '</button>';
+      const n = S.mode === 'night' ? S.night : null;
+      const night = S.mode === 'night';
+      const dayBtn = (d, l) => '<button type="button" class="wpb-seg' + (night && S.day === d ? ' is-on' : '') + '" data-bact="day" data-day="' + d + '" aria-pressed="' + (night && S.day === d) + '">' + l + '</button>';
+      const recBtn = '<button type="button" class="wpb-seg' + (!night ? ' is-on' : '') + '" data-bact="record" aria-pressed="' + !night + '">Track record</button>';
       const src = [];
       if (n) {
         const dk = n.games.filter((g) => g.books.DraftKings).length;
@@ -102,8 +156,10 @@
       return '<section class="wp-sec wpb-head"><div class="wp-sec-h wp-sec-h--split"><div>' +
         '<h2 id="h-bets">Bets</h2>' +
         '<p>Every player prop at Betano and Betclic, priced against DraftKings’ line with its margin taken off. A bet is value when the book pays more than its fair odds. Open any pick for the research behind it.</p>' +
-        '</div><div class="wpb-days" role="group" aria-label="Night">' + dayBtn('today', 'Tonight') + dayBtn('tomorrow', 'Tomorrow') + '</div></div>' +
-        (src.length ? '<div class="wpb-src">' + src.join('') + (n ? '<span class="wpb-at">Prices from ' + esc(clock(n.loadedAt)) + '</span>' : '') + '</div>' : '') +
+        '</div><div class="wpb-days" role="group" aria-label="Night">' + dayBtn('today', 'Tonight') + dayBtn('tomorrow', 'Tomorrow') + recBtn + '</div></div>' +
+        (src.length ? '<div class="wpb-src">' + src.join('') +
+          (S.logError ? '<span class="wpb-srcchip is-off"><b>Track record</b> not saved: ' + esc(S.logError) + '</span>' : S.logged ? '<span class="wpb-srcchip"><b>Track record</b> ' + S.logged + ' value picks logged for this night</span>' : '') +
+          (n ? '<span class="wpb-at">Prices from ' + esc(clock(n.loadedAt)) + '</span>' : '') + '</div>' : '') +
         '</section>';
     }
     function chip(name, text, ok) {
@@ -206,7 +262,7 @@
       const { a, line } = analysisFor(L);
       const side = p.side === 'under' ? 'under' : 'over';
       const why = L.proj ? B().reasons({ a, proj: L.proj, m: L.m, side, line: p.side === 'atleast' ? p.line - 0.5 : p.line, ctx: L.ctx, grp: L.grp, pr: L.pr }) : [];
-      return '<div class="wpb-grid">' +
+      return placeHTML(p) + '<div class="wpb-grid">' +
         block('The price', priceTable(L, p)) +
         block('Chance of each total', distSVG(L, p) + '<p class="wpb-note">Mean ' + n1(L.pr.mu) + (L.pr.muModel != null ? ' · our projection ' + n1(L.pr.muModel) : '') + ' · DraftKings ' + L.pr.anchor.line + ' at ' + pct(L.pr.anchor.pOverRaw) + ' over without margin, ' + pct(L.pr.anchor.pOver) + ' after the over correction.</p>') +
         block('Last 10 games against ' + (p.side === 'atleast' ? (p.line - 0.5) : p.line), lastTenSVG(a, p) + hitHTML(a, p)) +
@@ -217,6 +273,45 @@
         '<p class="wpb-disclaim">Research, not a promise: on 16,146 DraftKings closing lines this season, neither these projections nor matchup or hit-rate rules beat the market. The edge, when there is one, is the price.</p>';
     }
     const block = (t, body) => '<section class="wpb-block"><h3>' + esc(t) + '</h3>' + body + '</section>';
+
+    // "I placed this": the bet goes into the track record with your stake, at the price shown.
+    function placeHTML(p) {
+      if (!P() || P().BETTABLE.indexOf(p.book) < 0) return '';
+      const rec = S.log && S.log[P().pickId(S.date, p)];
+      const k = esc(p.key);
+      if (rec && rec.placed) {
+        return '<div class="wpb-place is-placed"><span>You placed <b>€' + esc(String(rec.placed.stake)) + '</b> at ' + dec2(rec.placed.dec) + '. It is in your track record.</span>' +
+          '<button type="button" class="wp-btn wp-btn--quiet" data-bact="unplace" data-key="' + k + '">Remove</button></div>';
+      }
+      return '<div class="wpb-place"><label class="wpb-f wpb-num"><span>Stake €</span><input inputmode="decimal" data-bact="stake" data-key="' + k + '" data-focus="bets-stake" value="' + esc(String(S.stake || '')) + '" placeholder="10"></label>' +
+        '<button type="button" class="wp-btn" data-bact="place" data-key="' + k + '">I placed this at ' + dec2(p.dec) + '</button>' +
+        '<span class="wpb-note">Adds it to your track record with your stake.</span></div>';
+    }
+
+    async function setPlaced(key, stake) {
+      const p = S.board && S.board.picks.find((x) => x.key === key);
+      if (!p || !P()) return;
+      try {
+        if (!S.log) S.log = await client().picks.load();
+        const id = P().pickId(S.date, p);
+        const now = Date.now();
+        let rec = S.log[id];
+        if (stake == null) {
+          if (!rec) return;
+          if (rec.flagged) { rec = Object.assign({}, rec); delete rec.placed; S.log[id] = rec; await client().picks.save([rec]); }
+          else { delete S.log[id]; await client().picks.save([], [id]); }
+        } else {
+          rec = Object.assign({}, rec || P().record(p, S.date, now, false), { placed: { stake, dec: p.dec, at: now } });
+          S.log[id] = rec;
+          await client().picks.save([rec]);
+        }
+        S.logError = null;
+      } catch (e) {
+        S.logError = e.message || String(e);
+        return rerender();
+      }
+      redrawList();
+    }
 
     function priceTable(L, p) {
       const D = L.pr.dist;
@@ -375,6 +470,94 @@
         '<p><b>What the backtest found.</b> At DraftKings’ closing odds, nothing won: betting on our projections lost 6%, Linemaker’s rule (overs against the 5 weakest defences, unders against the 5 best) lost 6%, and betting overs after 7 hits in 10 lost 11%. So value here is a book paying more than DraftKings’ fair price. Expected value is an average over many bets; any one bet can lose. Bet only what you can afford to lose.</p></footer>';
     }
 
+    /* -------------------------------------------------------- track record */
+
+    const units = (x) => (x >= 0 ? '+' : '−') + Math.abs(x).toFixed(2) + ' u';
+    const euros = (x) => (x >= 0 ? '+' : '−') + '€' + Math.abs(x).toFixed(2);
+    const OUTCOME = { win: 'Won', loss: 'Lost', push: 'Push', void: 'Void' };
+
+    function recordHTML() {
+      if (S.rec.loading && !S.log) return '<div class="wp-loading"><span class="wp-spin wpb-spin" aria-hidden="true"></span><p id="wpb-msg">' + esc(S.rec.msg) + '</p></div>';
+      if (S.rec.error && !S.log) {
+        return '<div class="wp-panel wp-errorpanel" role="alert"><h2>Could not read the track record</h2><p>' + esc(S.rec.error.message || String(S.rec.error)) + '</p>' +
+          '<p class="wp-dim">It lives in data/picks.json and needs the local server (python server.py), restarted once for the new routes.</p>' +
+          '<div class="wp-form-actions"><button type="button" class="wp-btn wp-btn--primary" data-bact="retry">Try again</button></div></div>';
+      }
+      const sum = P().summary(S.log || {});
+      const a = sum.all;
+      if (!a.n && !sum.placed.n) {
+        return '<section class="wp-sec"><div class="wp-empty"><p><b>Nothing logged yet.</b> Every value pick the Bets view shows at Betano or Betclic is logged the moment it appears, with its price then, and graded the day after: open Tonight before the games and come back tomorrow.</p>' +
+          '<p>To log every night even when you do not open the page, schedule <code>node tools/picks.js log</code> (see the README).</p></div></section>';
+      }
+      const tile = (label, big, sub, cls) => '<li class="wpb-tile' + (cls ? ' ' + cls : '') + '"><span>' + esc(label) + '</span><b>' + big + '</b><small>' + sub + '</small></li>';
+      const pm = (x, se) => (x == null ? '–' : evText(x)) + (se != null ? ' ± ' + (196 * se).toFixed(1) + '%' : '');
+      const P2 = sum.placed;
+      const tiles = '<ul class="wpb-tiles">' +
+        tile('Value picks', String(a.n), a.settled + ' settled · ' + a.pending + ' to come' + (a.void ? ' · ' + a.void + ' void' : '')) +
+        tile('Record', a.win + '–' + a.loss + (a.push ? '–' + a.push : ''), a.settled ? Math.round(100 * a.win / Math.max(1, a.win + a.loss)) + '% won' : 'no results yet') +
+        tile('Profit, 1 unit a pick', a.settled ? units(a.units) : '–', a.settled ? 'return ' + pm(a.roi, a.roiSe) : 'graded the day after', a.settled ? (a.units >= 0 ? 'is-pos' : 'is-neg') : '') +
+        tile('Expected', a.settled ? units(a.expected) : '–', a.settled ? 'average edge when logged ' + evText(a.evAvg) : '') +
+        tile('Against the closing line', a.clvN ? evText(a.clvAvg) : '–', a.clvN ? 'over ' + a.clvN + ' picks' + (a.clvSe != null ? ', ± ' + (196 * a.clvSe).toFixed(1) + '%' : '') : 'graded the day after', a.clvN ? (a.clvAvg >= 0 ? 'is-pos' : 'is-neg') : '') +
+        (P2.n ? tile('Your bets', P2.settled ? euros(P2.profit) : '€' + P2.open.toFixed(2) + ' open', P2.settled ? '€' + P2.staked.toFixed(2) + ' staked · ' + (P2.roi != null ? evText(P2.roi) : '') + (P2.pending ? ' · ' + P2.pending + ' open' : '') : P2.n + ' placed, none settled yet', P2.settled ? (P2.profit >= 0 ? 'is-pos' : 'is-neg') : '') : '') +
+        '</ul>';
+      const note = '<p class="wpb-note">Results are noisy: at about even odds, 100 bets land anywhere within ±20% of their true return by luck alone. The closing line settles sooner: if DraftKings’ closing price, after the same corrections, still makes a pick worth more than the odds it was logged at, the market moved towards it. A positive average over a few hundred picks is the sign of a real edge.</p>';
+      const brk = (title, g, name) => {
+        const keys = Object.keys(g).sort((x, y) => g[y].n - g[x].n);
+        if (keys.length < 2) return '';
+        return '<section class="wpb-block"><h3>' + esc(title) + '</h3><table class="wpb-table"><thead><tr><th></th><th>Picks</th><th>Record</th><th>Profit</th><th>Closing</th></tr></thead><tbody>' +
+          keys.map((k) => { const s = g[k]; return '<tr><td>' + esc(name(k)) + '</td><td>' + s.n + '</td><td>' + s.win + '–' + s.loss + '</td><td class="' + (s.units >= 0 ? 'is-pos' : 'is-neg') + '">' + (s.settled ? units(s.units) : '–') + '</td><td>' + (s.clvN ? evText(s.clvAvg) : '–') + '</td></tr>'; }).join('') +
+          '</tbody></table></section>';
+      };
+      const SIDE = { over: 'Overs', under: 'Unders', ladder: 'Ladders (X+)' };
+      const breaks = [brk('By book', sum.byBook, (k) => k), brk('By stat', sum.byStat, (k) => B().MARKETS[k] ? B().MARKETS[k].label : k), brk('By bet', sum.bySide, (k) => SIDE[k] || k)].filter(Boolean).join('');
+      return '<section class="wp-sec wpb-record" aria-labelledby="h-record"><div class="wp-sec-h"><h2 id="h-record">Track record</h2>' +
+        '<p>Every value pick shown at Betano or Betclic, at the price when it first appeared, graded from the box score the day after. Profit counts one unit on every pick; your bets count your stakes.' + (S.rec.loading ? ' <span class="wpb-dim" id="wpb-msg">' + esc(S.rec.msg) + '</span>' : '') + '</p></div>' +
+        tiles + seriesSVG(sum.series) + note +
+        (breaks ? '<div class="wpb-grid wpb-grid--3">' + breaks + '</div>' : '') +
+        '</section>' + recentHTML(sum);
+    }
+
+    // Running profit by night against what the edges promised.
+    function seriesSVG(series) {
+      if (series.length < 2) return '';
+      const W = 640, H = 150, pad = 28;
+      const vals = series.map((s) => s.units).concat(series.map((s) => s.expected), [0]);
+      const lo = Math.min(...vals), hi = Math.max(...vals);
+      const span = hi - lo || 1;
+      const x = (i) => pad + i * (W - pad - 8) / (series.length - 1);
+      const y = (v) => 8 + (hi - v) / span * (H - 30);
+      const path = (k) => series.map((s, i) => (i ? 'L' : 'M') + x(i).toFixed(1) + ' ' + y(s[k]).toFixed(1)).join(' ');
+      const last = series[series.length - 1];
+      return '<figure class="wpb-series"><svg class="wpb-svg" viewBox="0 0 ' + W + ' ' + H + '" role="img" aria-label="' + esc('Profit after ' + series.length + ' nights: ' + units(last.units) + ', expected ' + units(last.expected)) + '">' +
+        '<line x1="' + pad + '" x2="' + W + '" y1="' + y(0).toFixed(1) + '" y2="' + y(0).toFixed(1) + '" class="wpb-zero"/>' +
+        '<path d="' + path('expected') + '" class="wpb-line wpb-line--exp"/><path d="' + path('units') + '" class="wpb-line"/>' +
+        '<text x="2" y="' + (y(hi) + 4).toFixed(1) + '" class="wpb-axis wpb-axis--l">' + hi.toFixed(1) + '</text><text x="2" y="' + (y(lo) + 4).toFixed(1) + '" class="wpb-axis wpb-axis--l">' + lo.toFixed(1) + '</text>' +
+        '<text x="' + x(0).toFixed(1) + '" y="' + (H - 4) + '" class="wpb-axis">' + esc(series[0].date.slice(5)) + '</text><text x="' + x(series.length - 1).toFixed(1) + '" y="' + (H - 4) + '" class="wpb-axis">' + esc(last.date.slice(5)) + '</text>' +
+        '</svg><figcaption><span class="wpb-key"></span>Profit, units <span class="wpb-key wpb-key--exp"></span>Expected from the edges when logged</figcaption></figure>';
+    }
+
+    function recentHTML(sum) {
+      const list = sum.recent.filter((r) => (S.rec.filter === 'placed' ? r.placed && r.placed.stake > 0 : r.flagged));
+      const seg = (f, l) => '<button type="button" class="wpb-seg' + (S.rec.filter === f ? ' is-on' : '') + '" data-bact="rec-filter" data-f="' + f + '" aria-pressed="' + (S.rec.filter === f) + '">' + l + '</button>';
+      const shown = list.slice(0, S.rec.shown);
+      const M = B().MARKETS;
+      const row = (r) => {
+        const o = r.result ? r.result.outcome : null;
+        const u = r.placed && S.rec.filter === 'placed' ? (o ? euros(r.placed.stake * P().units(r, r.placed.dec)) : '€' + r.placed.stake) : o ? units(P().units(r, r.first.dec)) : '';
+        return '<tr><td>' + esc(r.date.slice(5)) + '</td><td><b>' + esc(r.name) + '</b><small>' + esc((M[r.m] ? M[r.m].short : r.m) + ' ' + (r.side === 'atleast' ? r.line + '+' : (r.side === 'over' ? 'O ' : 'U ') + r.line)) + ' · ' + esc(r.team) + ' v ' + esc(r.opp) + '</small></td>' +
+          '<td>' + esc(r.book) + '<small>' + dec2(r.placed && S.rec.filter === 'placed' ? r.placed.dec : r.first.dec) + ' · ' + evText(r.first.ev || 0) + '</small></td>' +
+          '<td>' + (o ? '<span class="wpb-out is-' + o + '">' + OUTCOME[o] + '</span>' + (r.result.v != null ? '<small>' + r.result.v + '</small>' : '') : '<span class="wpb-out">To come</span>') + '</td>' +
+          '<td class="' + (o === 'win' ? 'is-pos' : o === 'loss' ? 'is-neg' : '') + '">' + u + '</td>' +
+          '<td>' + (r.close && r.close.clv != null ? evText(r.close.clv) : '–') + '</td></tr>';
+      };
+      return '<section class="wp-sec wpb-recent" aria-labelledby="h-recent"><div class="wp-sec-h wp-sec-h--split"><div><h2 id="h-recent">Picks</h2><p>Newest first. Closing: what the pick was worth at DraftKings’ closing price.</p></div>' +
+        '<div class="wpb-days" role="group" aria-label="Which picks">' + seg('value', 'Value picks') + seg('placed', 'Your bets') + '</div></div>' +
+        (list.length ? '<div class="wpb-scroll"><table class="wpb-table wpb-rtable"><thead><tr><th>Night</th><th>Bet</th><th>Book · odds · edge</th><th>Result</th><th>' + (S.rec.filter === 'placed' ? 'Profit' : 'Units') + '</th><th>Closing</th></tr></thead><tbody>' + shown.map(row).join('') + '</tbody></table></div>' +
+          (list.length > shown.length ? '<div class="wpb-more"><button type="button" class="wp-btn" data-bact="rec-more">Show more</button></div>' : '')
+          : '<div class="wp-empty"><p>' + (S.rec.filter === 'placed' ? 'No bets marked as placed yet: open a pick and use “I placed this”.' : 'No value picks logged yet.') + '</p></div>') +
+        '</section>';
+    }
+
     /* -------------------------------------------------------------- events */
 
     function redrawList() {
@@ -390,7 +573,27 @@
       const t = e.target.closest && e.target.closest('[data-bact]');
       if (!t) return false;
       const act = t.dataset.bact;
-      if (act === 'day') { if (S.day !== t.dataset.day) { S.day = t.dataset.day; keep(); S.board = null; S.night = null; ensure(); } return true; }
+      if (act === 'day') {
+        const changed = S.day !== t.dataset.day;
+        if (changed || S.mode !== 'night') {
+          S.mode = 'night'; S.day = t.dataset.day; keep();
+          if (changed) { S.board = null; S.night = null; }
+          rerender(); ensure();
+        }
+        return true;
+      }
+      if (act === 'record') { if (S.mode !== 'record') { S.mode = 'record'; keep(); rerender(); ensure(); } return true; }
+      if (act === 'rec-filter') { S.rec.filter = t.dataset.f === 'placed' ? 'placed' : 'value'; S.rec.shown = 40; rerender(); return true; }
+      if (act === 'rec-more') { S.rec.shown += 40; rerender(); return true; }
+      if (act === 'place') {
+        const inp = t.parentNode && t.parentNode.querySelector('input[data-bact="stake"]');
+        const stake = parseFloat(String((inp && inp.value) || S.stake || '').replace(',', '.'));
+        if (!(stake > 0)) { if (inp) { inp.focus(); inp.setAttribute('aria-invalid', 'true'); } return true; }
+        S.stake = String(stake); keep();
+        setPlaced(t.dataset.key, Math.round(stake * 100) / 100);
+        return true;
+      }
+      if (act === 'unplace') { setPlaced(t.dataset.key, null); return true; }
       if (act === 'retry') { ensure(true); return true; }
       if (act === 'more') { S.shown += PAGE; redrawList(); return true; }
       if (act === 'open') {
@@ -429,10 +632,11 @@
       const act = t && t.dataset && t.dataset.bact;
       if (act === 'q') { S.f.q = t.value; S.shown = PAGE; redrawList(); return true; }
       if (act === 'c-line' || act === 'c-dec') { S.check[act === 'c-line' ? 'line' : 'dec'] = t.value; redrawCheck(); return true; }
+      if (act === 'stake') { t.removeAttribute('aria-invalid'); return true; }
       return false;
     }
 
-    return { ensure, html, onClick, onChange, onInput, busy: () => S.loading };
+    return { ensure, html, onClick, onChange, onInput, busy: () => S.loading || S.rec.loading };
   }
 
   root.WPBetsView = { create };

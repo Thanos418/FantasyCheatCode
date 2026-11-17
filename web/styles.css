@@ -925,3 +925,39 @@ body {
   #app .wpb-deep { animation: none; }
   #app .wpb-chev { transition: none; }
 }
+
+/* Bets: track record and placed bets */
+
+#app .wpb-place { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 8px 12px; margin-top: 12px; padding: 10px 12px; border: 1px dashed var(--line); border-radius: var(--r); background: var(--surface); }
+#app .wpb-place .wpb-note { margin: 0; align-self: center; }
+#app .wpb-place.is-placed { align-items: center; justify-content: space-between; border-style: solid; border-color: color-mix(in srgb, var(--good) 45%, var(--line)); background: color-mix(in srgb, var(--good) 8%, var(--surface)); font-size: 14px; }
+#app .wpb-place input[aria-invalid="true"] { border-color: var(--bad); }
+#app .wpb-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin: 0; padding: 0; list-style: none; }
+#app .wpb-tile { display: flex; flex-direction: column; gap: 2px; padding: 12px; border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--surface); box-shadow: var(--shadow); }
+#app .wpb-tile span { font-size: 11px; font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase; color: var(--muted); }
+#app .wpb-tile b { font-family: var(--display); font-size: 28px; font-weight: 800; line-height: 1.05; font-variant-numeric: tabular-nums; }
+#app .wpb-tile small { font-size: 12px; color: var(--ink-2); }
+#app .wpb-tile.is-pos b, #app .wpb-table .is-pos { color: var(--good); }
+#app .wpb-tile.is-neg b, #app .wpb-table .is-neg { color: var(--bad); }
+#app .wpb-series { margin: 14px 0 0; padding: 10px 12px 8px; border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--surface); }
+#app .wpb-series figcaption { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; font-size: 12px; color: var(--ink-2); }
+#app .wpb-line { fill: none; stroke: var(--good); stroke-width: 2.5; stroke-linejoin: round; stroke-linecap: round; }
+#app .wpb-line--exp { stroke: var(--muted); stroke-width: 1.5; stroke-dasharray: 5 4; }
+#app .wpb-zero { stroke: var(--line); stroke-width: 1; }
+#app .wpb-axis--l { text-anchor: start; }
+#app .wpb-key { display: inline-block; width: 18px; height: 0; border-top: 2.5px solid var(--good); margin-right: -8px; }
+#app .wpb-key--exp { border-top: 1.5px dashed var(--muted); }
+#app .wpb-grid--3 { grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); }
+#app .wpb-scroll { overflow-x: auto; border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--surface); }
+#app .wpb-rtable td, #app .wpb-rtable th { white-space: nowrap; }
+#app .wpb-rtable td small { display: block; font-size: 11px; color: var(--muted); }
+#app .wpb-rtable tr:last-child td { border-bottom: 0; }
+#app .wpb-out { display: inline-block; padding: 0 6px; border-radius: 4px; background: var(--bg); font-size: 11px; font-weight: 700; color: var(--ink-2); }
+#app .wpb-out.is-win { background: color-mix(in srgb, var(--good) 16%, transparent); color: var(--good); }
+#app .wpb-out.is-loss { background: color-mix(in srgb, var(--bad) 14%, transparent); color: var(--bad); }
+#app .wpb-record .wpb-note { max-width: 80ch; }
+@media (max-width: 720px) {
+  #app .wpb-tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  #app .wpb-tile b { font-size: 22px; }
+  #app .wpb-days { flex-wrap: wrap; }
+}
