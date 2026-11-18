@@ -31,13 +31,22 @@
     };
   }
 
-  // One pick from the board as a record (flagged: it was value when logged).
+  /* One pick from the board as a record (flagged: it was value when logged). withMove: DraftKings had
+     moved towards it; early: DraftKings had not moved yet and the projection counted. */
   function record(p, date, now, flagged) {
     const L = p.entry, s = snap(p, now);
     return {
       id: pickId(date, p), date, event: L.game.id, start: L.game.start || null, athlete: String(L.id), name: L.name,
-      team: L.ctx.team, opp: L.ctx.opp, m: L.m, book: p.book, side: p.side, line: p.line, flagged: !!flagged, first: s, last: s,
+      team: L.ctx.team, opp: L.ctx.opp, m: L.m, book: p.book, side: p.side, line: p.line, flagged: !!flagged,
+      withMove: !!p.withMove, early: !!(L.pr.early && L.pr.w > 0), first: s, last: s,
     };
+  }
+
+  // How long before tip-off a pick was first logged.
+  function timing(r) {
+    if (!r.start || !r.first || !r.first.at) return 'unknown';
+    const h = (r.start - r.first.at) / 3600e3;
+    return h >= 3 ? '3h+' : h >= 1 ? '1-3h' : 'under 1h';
   }
 
   // The board's value picks worth logging: a book you can bet at, a game not started yet.
@@ -65,7 +74,7 @@
       const moved = !old.last || old.last.dec !== r.last.dec || old.last.ev !== r.last.ev || r.last.at - old.last.at >= 30 * 60 * 1000;
       if (!moved && (old.flagged || !r.flagged)) return;
       const n = Object.assign({}, old, { last: r.last });
-      if (r.flagged && !old.flagged) { n.flagged = true; n.first = r.first; }
+      if (r.flagged && !old.flagged) { n.flagged = true; n.first = r.first; n.withMove = r.withMove; n.early = r.early; }
       log[r.id] = n;
       changed.push(n);
     });
@@ -166,11 +175,12 @@
     return {
       all: stats(flagged),
       byBook: by((r) => r.book), byStat: by((r) => r.m), bySide: by((r) => (r.side === 'atleast' ? 'ladder' : r.side)),
+      byTiming: by(timing), byMove: by((r) => (r.withMove ? 'moved' : r.early ? 'early' : 'other')),
       series,
       placed: { n: placed.length, settled: settledP.length, pending: placed.filter((r) => !r.result).length, staked, profit, roi: staked ? profit / staked : null, open: placed.filter((r) => !r.result).reduce((t, r) => t + r.placed.stake, 0) },
       recent: all.slice().sort((a, b) => (b.date < a.date ? -1 : b.date > a.date ? 1 : (b.first.ev || 0) - (a.first.ev || 0))),
     };
   }
 
-  return { BETTABLE, pickId, record, fromBoard, merge, outcome, grade, ungraded, units, stats, summary };
+  return { BETTABLE, pickId, record, timing, fromBoard, merge, outcome, grade, ungraded, units, stats, summary };
 });

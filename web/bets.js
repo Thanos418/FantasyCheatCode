@@ -58,6 +58,9 @@
     // How far the model moves the corrected market (0 = not at all). Out of sample it only held its
     // own for rebounds; for every other stat the market alone priced the lines better.
     weight: { pts: 0, reb: 0.1, ast: 0, tpm: 0, stl: 0, blk: 0, pr: 0, pa: 0, ra: 0, pra: 0 },
+    // The same while DraftKings' line is still at its opening price: the open has not taken in what the
+    // close will, and the projection sees some of it coming (tools/backtest_open.js). Other stats: 0.
+    weightEarly: { reb: 0.2, ast: 0.3, tpm: 0.25, stl: 0.4, blk: 0.3, ra: 0.15 },
   };
   function params(over) {
     const P = JSON.parse(JSON.stringify(DEFAULTS));
@@ -428,12 +431,20 @@
       const P = book.players[id];
       Object.keys(P.markets).forEach((m) => {
         const mk = P.markets[m];
-        const runs = mk.runs || [];
+        const L = mainLine(mk);
+        const f = L && devig(L.over, L.under);
+        // A ladder for another period prices rungs at or below the full-game line as long shots ("2+
+        // rebounds" at 2.58 next to an over 4.5 at even money), or rungs well above it as likely: drop it.
+        // Lo / hi rather than over / under: the pair may still be the wrong way round here (fixed below).
+        const lo = f ? Math.min(f.over, f.under) : 0, hi = f ? Math.max(f.over, f.under) : 1;
+        const fits = (run) => !f || run.every((x) => {
+          const q = 1 / x.dec, at = Math.floor(L.line);
+          return x.k < at ? q >= hi - 0.05 : x.k === at ? q >= lo - 0.05 : x.k === at + 1 || q <= hi + 0.05;
+        });
+        const runs = (mk.runs || []).filter(fits);
         delete mk.runs;
         if (runs.length === 1) mk.ladder = runs[0];
         else if (runs.length > 1) {
-          const L = mainLine(mk);
-          const f = L && devig(L.over, L.under);
           const score = (run) => {
             if (!f) return -run.length;
             const r = run.find((x) => x.k === Math.floor(L.line) + 1);
@@ -692,6 +703,10 @@
   /* The backtest checked rungs and alternative lines up to about one standard deviation from the
      market's mean; further out they are shown but not ranked. */
   const TESTED_SD = 1.25;
+  /* DraftKings moved when its main line changed since it opened, or its chance of the over by this much
+     on the same line. A book still paying the old price on the side it moved towards is behind it: in the
+     backtest the opening line on that side returned +6.7% at DraftKings' margin (tools/backtest_open.js). */
+  const MOVED = 0.04;
 
   // The line a book treats as its main one: the over/under closest to even money.
   function mainLine(mk) {
@@ -712,15 +727,24 @@
       if (f) {
         const sh = P.overShift && typeof P.overShift === 'object' ? P.overShift[m] || 0 : P.overShift || 0;
         const pOver = Math.min(0.98, Math.max(0.02, f.over - sh));
-        anchor = { book: o.books[i].book, line: L.line, pOverRaw: f.over, pOver, margin: f.margin, mu: impliedMean(L.line, pOver, d), L };
+        anchor = { book: o.books[i].book, line: L.line, pOverRaw: f.over, pOver, margin: f.margin, mu: impliedMean(L.line, pOver, d), L, open: null, move: 0 };
+        // Where DraftKings opened (ESPN keeps it): unmoved since means early; a move is the change in its mean.
+        const fo = L.open && L.open.line > 0 && devig(L.open.over, L.open.under);
+        if (fo) {
+          anchor.open = { line: L.open.line, pOver: fo.over, mu: impliedMean(L.open.line, Math.min(0.98, Math.max(0.02, fo.over - sh)), d) };
+          if (anchor.open.line !== L.line || Math.abs(fo.over - f.over) >= MOVED) anchor.move = anchor.mu - anchor.open.mu;
+        }
       }
     }
-    const w = P.weight[m] || 0;
+    const early = !!(anchor && anchor.open && anchor.open.line === anchor.line && Math.abs(anchor.open.pOver - anchor.pOverRaw) < 0.01);
+    const w = ((early && P.weightEarly ? P.weightEarly : P.weight)[m]) || 0;
     const muMkt = anchor ? anchor.mu : null;
     const mu = muMkt != null && muModel != null ? muMkt + w * (muModel - muMkt) : muModel != null ? muModel : muMkt;
     if (mu == null) return null;
     const D = dist(mu, d);
     const far = (k) => Math.abs(k - 0.5 - mu) / D.sd > TESTED_SD;
+    const mv = anchor ? anchor.move : 0;
+    const withMove = (book, side) => !!mv && book !== anchor.book && (side === 'under' ? mv < 0 : mv > 0);
     const bets = [];
     o.books.forEach((b) => {
       b.mk.lines.forEach((L) => {
@@ -729,15 +753,15 @@
         [['over', L.over, r.over], ['under', L.under, r.under]].forEach(([side, dec, p]) => {
           if (!(dec > 1)) return;
           const pw = p + r.push / 2; // a push returns the stake: count it as half a win for the price
-          bets.push({ book: b.book, side, line: L.line, dec, p: pw, ev: ev(p, dec) + r.push, kelly: kelly(pw, dec), margin: fair ? fair.margin : null, open: L.open || null, suspect: pw - 1 / dec > SUSPECT, far: far(Math.floor(L.line) + 1) });
+          bets.push({ book: b.book, side, line: L.line, dec, p: pw, ev: ev(p, dec) + r.push, kelly: kelly(pw, dec), margin: fair ? fair.margin : null, open: L.open || null, suspect: pw - 1 / dec > SUSPECT, far: far(Math.floor(L.line) + 1), withMove: withMove(b.book, side) });
         });
       });
       b.mk.ladder.forEach((x) => {
         const p = D.atLeast(x.k);
-        bets.push({ book: b.book, side: 'atleast', line: x.k, dec: x.dec, p, ev: ev(p, x.dec), kelly: kelly(p, x.dec), margin: null, suspect: p - 1 / x.dec > SUSPECT, far: far(x.k) });
+        bets.push({ book: b.book, side: 'atleast', line: x.k, dec: x.dec, p, ev: ev(p, x.dec), kelly: kelly(p, x.dec), margin: null, suspect: p - 1 / x.dec > SUSPECT, far: far(x.k), withMove: withMove(b.book, 'atleast') });
       });
     });
-    return { m, mu, muModel, muMkt, w, anchor, dist: D, bets };
+    return { m, mu, muModel, muMkt, w, early, anchor, dist: D, bets };
   }
 
   /* One night's board from WPOdds.loadNight: every player DraftKings prices, every stat, every bet

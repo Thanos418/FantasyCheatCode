@@ -178,6 +178,14 @@ test('DraftKings ladders: a second run (another period) is dropped for the one m
   assert.deepStrictEqual(mk.ladder.map((x) => x.k), [6, 9, 10, 11, 12]);
 });
 
+test('DraftKings ladders: a lone run from another period is dropped, a full-game one kept', () => {
+  // over 4.5 rebounds at +121 / under -160: "2+" at 2.52 is a quarter's ladder, not the game's
+  const bogus = B.parseEspnProps({ items: [prop(5, 3, 4.5, '+121'), prop(5, 3, 4.5, '-160'), prop(5, 220, 2, '+152')] });
+  assert.deepStrictEqual(bogus.players['5'].markets.reb.ladder, []);
+  const good = B.parseEspnProps({ items: [prop(5, 3, 4.5, '+121'), prop(5, 3, 4.5, '-160'), prop(5, 220, 3, '-400'), prop(5, 220, 5, '+121'), prop(5, 220, 7, '+350')] });
+  assert.deepStrictEqual(good.players['5'].markets.reb.ladder.map((x) => x.k), [3, 5, 7]);
+});
+
 test('Betano: over/under rows and ladders by player', () => {
   const json = { data: { event: { id: 1, name: 'Toronto Raptors - New York Knicks', startTime: 0, url: '/odds/x/1/', markets: [
     { type: 'X025', tableLayout: { rows: [{ title: 'Jalen Brunson', groupSelections: [{ handicap: 25.5, selections: [{ name: 'Mais de 25.5', price: 1.8 }, { name: 'Menos 25.5', price: 1.72 }] }] }] } },
@@ -240,6 +248,35 @@ test('price: a bet priced far below our chance is suspect, a far rung is unteste
   assert.ok(pr.bets.find((b) => b.line === 7).suspect);
   assert.ok(pr.bets.find((b) => b.line === 20).far);
   assert.ok(!pr.bets.find((b) => b.side === 'over').far);
+});
+
+test('price: DraftKings still at its opening price is early, and the projection counts for more', () => {
+  const P = B.params({ overShift: { reb: 0 }, disp: { reb: [1.2, 0] } });
+  const at = (open) => ({ lines: [{ line: 8.5, over: 1.909, under: 1.909, open }], ladder: [] });
+  const early = B.price({ m: 'reb', books: [{ book: 'DraftKings', mk: at({ line: 8.5, over: 1.909, under: 1.909 }) }], muModel: 12, P });
+  assert.strictEqual(early.early, true);
+  assert.strictEqual(early.w, P.weightEarly.reb);
+  const later = B.price({ m: 'reb', books: [{ book: 'DraftKings', mk: at({ line: 7.5, over: 1.909, under: 1.909 }) }], muModel: 12, P });
+  assert.strictEqual(later.early, false);
+  assert.strictEqual(later.w, P.weight.reb);
+  assert.ok(early.mu > later.mu); // same market, the model pulls harder while it is early
+  const none = B.price({ m: 'reb', books: [{ book: 'DraftKings', mk: at(undefined) }], muModel: 12, P });
+  assert.strictEqual(none.early, false);
+});
+
+test('price: a book still on the side DraftKings moved towards is marked withMove', () => {
+  const P = B.params({ overShift: { pts: 0 }, disp: { pts: [3, 0] } });
+  const dk = { lines: [{ line: 24.5, over: 1.909, under: 1.909, open: { line: 23.5, over: 1.909, under: 1.909 } }], ladder: [] };
+  const bn = { lines: [{ line: 23.5, over: 1.9, under: 1.9 }], ladder: [{ k: 25, dec: 2.1 }] };
+  const pr = B.price({ m: 'pts', books: [{ book: 'DraftKings', mk: dk }, { book: 'Betano', mk: bn }], muModel: null, P });
+  assert.ok(pr.anchor.move > 0.5);
+  const bet = (book, side) => pr.bets.find((b) => b.book === book && b.side === side);
+  assert.strictEqual(bet('Betano', 'over').withMove, true);
+  assert.strictEqual(bet('Betano', 'atleast').withMove, true);
+  assert.strictEqual(bet('Betano', 'under').withMove, false);
+  assert.strictEqual(bet('DraftKings', 'over').withMove, false); // the reference itself is never behind
+  const still = B.price({ m: 'pts', books: [{ book: 'DraftKings', mk: { lines: [{ line: 24.5, over: 1.909, under: 1.909, open: { line: 24.5, over: 1.87, under: 1.95 } }], ladder: [] } }, { book: 'Betano', mk: bn }], muModel: null, P });
+  assert.strictEqual(still.anchor.move, 0); // a 1-point price change is not a move
 });
 
 test('buildBoard: one line per player and stat, picks ranked by EV, no suspect or far ones', () => {

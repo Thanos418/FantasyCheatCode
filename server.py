@@ -563,6 +563,9 @@ def public_get(name, url, ttl, flt=None, transform=None, source="ESPN", accept="
             try:
                 body = _upstream(url, {"espn_s2": "", "swid": ""}, flt, cookies=False, accept=accept)
             except EspnError as e:
+                if e.code == "espn_auth":  # no cookies go to public sources: a refusal, not a login problem
+                    raise EspnError(502, "refused", "%s refused the request (HTTP 401/403). It may block this "
+                                    "network or connection; try from another one." % source)
                 raise EspnError(e.status, e.code, e.message.replace("ESPN", source))
             if transform:
                 body = transform(body)

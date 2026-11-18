@@ -42,11 +42,13 @@ The Bets view lists every player prop for tonight's games (or tomorrow's) at Bet
 
 - **The fair price** comes from DraftKings' line, read through ESPN, with the bookmaker's margin taken off. Overs are then marked down: this season they went over less often than DraftKings priced them, by 2.5 points on points, 3.5 on PRA and 4 on steals (fitted per stat on 16,146 closing lines). A distribution fitted on the same lines turns that into a chance for every line and every ladder rung ("25+").
 - **Value** is a book paying more than those fair odds: Betano or Betclic still on an old line, a different line, or a ladder rung priced off its own line. The list ranks bets by expected value (the extra you expect back per euro), with a stake of a quarter Kelly, at most 2.5% of your bankroll. With no value, it shows the closest bets and the odds another book would need to pay.
+- **DK moved** marks a value bet on the side DraftKings has moved towards since it opened (its line changed, or its chance of the over by 4 points or more), at a book that still pays the old price. These come first in the list. In the opening-lines backtest, the old line on that side returned +6.7% at DraftKings' margin.
+- **Early** marks a line DraftKings has not moved since it opened. Its opening price has not taken in what the close will, and our projection sees some of it coming, so while it is early the projection counts for more: rebounds 20%, assists 30%, 3s 25%, steals 40%, blocks 30%, rebounds + assists 15% (points and the other combos stay on the market alone).
 - **The research** under each pick: every book's price for that player and stat, the chance of each total, his last 10 games against the line, hit rates (last 5, last 10, season, last season, against tonight's opponent), how much of that stat the opponent gives up to his position (and its rank), the game total, spread and back-to-backs, minutes and shots lately, splits without teammates who are out tonight, DraftKings' line movement, and our own projection.
 - **Check a price** takes any book's line and odds (Placard, Solverde, ESC Online…) and gives the fair odds, the chance and the expected value.
 - DraftKings is the reference and is not bettable from Portugal; the "All" book filter shows it anyway. Ladder rungs and lines far from the main line are shown but not ranked: the backtest only checked rungs up to about one standard deviation away. A price far below our chance (usually a different bet read as this one) is never ranked either.
 
-The research is there to read, not to bet on: in the backtest neither our projections nor matchup or hit-rate rules beat DraftKings' closing line (see Backtest). Our projection moves the fair price only for rebounds, the one stat where it held its own out of sample.
+The research is there to read, not to bet on: in the backtest neither our projections nor matchup or hit-rate rules beat DraftKings' closing line (see Backtest). Once DraftKings has moved, our projection moves the fair price only for rebounds, the one stat where it held its own against the close out of sample.
 
 #### Track record
 
@@ -54,7 +56,7 @@ Every value pick the view shows at Betano or Betclic goes into a track record th
 
 - profit at one unit a pick, the return with its 95% range, and what the edges promised when the picks were logged;
 - closing-line value: what each pick was worth at DraftKings' closing price after the same corrections. Results need hundreds of bets to mean much; a positive average here shows an edge much sooner;
-- breakdowns by book, stat and kind of bet, a running total by night, and every pick;
+- breakdowns by book, stat and kind of bet, by how long before tip-off the pick was logged, and by what DraftKings had done by then (moved towards it, not moved yet, other), a running total by night, and every pick;
 - **your bets**: open a pick, enter your stake and press "I placed this"; they are counted in euros, at the price you took.
 
 The record lives in `data/picks.json` (kept out of git). Picks are logged when the view loads a night, so a night you never open is missing. To log every night anyway, run the command-line version from a scheduled task, after DraftKings has its lines and before the first game (23:00 in Lisbon works):
@@ -70,7 +72,24 @@ schtasks /Create /TN "FantasyCheatCode picks" /SC DAILY /ST 23:00 /TR "node C:\U
 
 It goes through the local server when it is running. Without it, it reads the sources itself, and Betano refuses those requests, so that night has Betclic's picks only. Grading needs only ESPN.
 
-Betano and Betclic have no public API. The local server reads Betano's own JSON pages and the odds Betclic embeds in its game pages, no more often than every two minutes, without cookies. Betclic's rebounds and assists only load inside its live page, so from Betclic the view has points and PRA. Either site can change its pages or block the requests; the view then says so and carries on with the others.
+Betano and Betclic have no public API. The local server reads Betano's own JSON pages and the odds Betclic embeds in its game pages, no more often than every two minutes, without cookies. Betclic's rebounds and assists only load inside its live page, so from Betclic the view has points and PRA. Either site can change its pages or block the requests; the view then says so ("refused the request") and carries on with the others. Some networks are refused outright, a work network for one: run it from home.
+
+#### Price history
+
+Betano and Betclic keep no price history, so `tools/snapshots.js` keeps one: every few minutes it reads tonight's board and appends every price that changed (DraftKings, Betano, Betclic) to `data/snapshots/<date>.jsonl` (kept out of git). Each run also logs the value picks into the track record, as the view does when it is open, so with it running you no longer need the `picks.js log` task.
+
+```
+node tools/snapshots.js --every 10     # a snapshot every 10 minutes until tonight's last game starts
+node tools/snapshots.js report         # every finished night on file
+```
+
+Run it on game days from about 18:00 in Lisbon, with the local server running (Betano only answers through it):
+
+```
+schtasks /Create /TN "FantasyCheatCode snapshots" /SC DAILY /ST 18:00 /TR "node C:\path\to\FantasyCheatCode\tools\snapshots.js --every 10"
+```
+
+The report takes every value price seen at Betano or Betclic, the first time it appeared, and gives how many there are a night, how long each stayed on offer, its value against DraftKings' closing line and its results: overall, by book, by time before tip-off, for prices that were value right after DraftKings moved, and for ladders. That is the test the opening-lines backtest could not run. The Bets view is worth betting on if the closing-line value stays above about +2% with its range above zero over a few hundred prices, with a few a night.
 
 ## Requirements
 
@@ -242,6 +261,27 @@ Betting every pick at DraftKings' closing odds, 1 unit each (± is a 95% range):
 
 DraftKings' margin on these lines averaged 6.7%. Nothing beat its closing line, which is why the Bets view looks for value in prices at other books rather than in projections. Those prices cannot be backtested: Betano and Betclic keep no history.
 
+### Opening lines backtest
+
+ESPN also keeps DraftKings' opening line and price. `tools/backtest_open.js` compares them with the close (the first run reads about a thousand ESPN pages, later runs take seconds):
+
+```
+node tools/backtest_open.js
+```
+
+What it found (21,494 DraftKings main lines, 20 Oct to 17 Nov 2026; ± is a 95% range):
+
+| | Result |
+|---|---|
+| Lines whose line changed between open and close | 37% (over 50% for points and the combos, under 11% for 3s, steals and blocks) |
+| A book still at DraftKings' opening price, value of 0%+ / 4%+ / 10%+ against the corrected close | +7.0% / +11.3% / +19.0% return, against +7.2% / +11.2% / +17.4% promised (10,949 / 6,275 / 2,672 bets) |
+| The same at 3%+ with 2, 4 or 6 points more margin than DraftKings | +10.7%, +11.1%, +10.6% |
+| The opening line on the side DraftKings moved towards | +6.7% ± 2.0% at DraftKings' margin, +4.8% with 2 points more, +2.9% with 4 more |
+| Our projection against the opening line (rebounds, assists, 3s, steals, blocks, R+A), value 2%+ | closing-line value +2.1% ± 0.9%, return +4.4% ± 7.2% (792 bets) |
+| The same with 2 points more margin | closing-line value +1.4% ± 1.4% |
+
+Two things follow. The corrected closing line is a fair price that holds on lines other than DraftKings' own: when it says a price has value, the value comes back as profit. And a book that lags DraftKings pays: the question is only how often Betano and Betclic do, which is what the price history measures. Our projection beats DraftKings' opening line by a little in the stats where it has a weight, enough for a book with DraftKings' margin, not much more.
+
 ## Tests
 
 ```
@@ -275,6 +315,8 @@ node --test
 | `tools/backtest_props.js`, `tools/props_data.js` | The Bets backtest and its data. |
 | `web/picklog.js` | The Bets track record: logging, grading, closing-line value, summary. |
 | `tools/picks.js` | The track record from the command line (`node tools/picks.js [log]`). |
+| `tools/snapshots.js` | Price history of tonight's board, and its report (`node tools/snapshots.js [--every 10 \| report]`). |
+| `tools/backtest_open.js` | DraftKings' opening lines against its closing lines; fits `weightEarly`. |
 | `tools/build_factors.py` | Rebuilds `web/factors.js` from public ESPN game logs. |
 | `tools/backtest.js` | Replays past seasons through the app's code (`node tools/backtest.js`). |
 | `tools/digest.js` | Daily digest for the command line or a scheduled task (`node tools/digest.js`). |

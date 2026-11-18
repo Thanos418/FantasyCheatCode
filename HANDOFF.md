@@ -60,6 +60,20 @@ night (21 the first night), graded the day after with closing-line value; "I pla
 stake. `node tools/picks.js [log]` does the same from the command line or a scheduled task (not set up).
 `node --test` passes (148 tests).
 
+## State (Nov 18 2026)
+
+Phase 5 (SPEC.md): DraftKings' opening lines. `node tools/backtest_open.js` showed that a book still at
+DraftKings' opening price returns what the corrected close promises (+7.0% for +7.2% promised, 10,949 bets)
+and that our projection beats the opening line a little for rebounds, assists, 3s, steals, blocks and R+A.
+So: "DK moved" bets first in the Bets view, "Early" lines use `weightEarly`, the track record splits by time
+before tip-off and by what DraftKings had done. `tools/snapshots.js` keeps a price history of Betano,
+Betclic and DraftKings (and logs the track record); its `report` is the go / no-go test: closing-line value
+above about +2% over a few hundred prices. Fixed: lone DraftKings ladders from another period (544 lines,
+"2+ rebounds" at 2.58) and the "No Betano cookies saved" message for a refused request.
+`node --test` passes (152 tests). Betano, Betclic and DraftKings answer 403 from the work network: run the
+snapshots at home. Exploratory (not in the repo): 44 rules of thumb at the closing price (unders by stat,
+fading streaks, back-to-backs, totals, plus-money sides…), none positive on both even and odd days.
+
 ## Backtest
 
 `node tools/backtest.js` drives web/model.js and web/insights.js on 2024-25 and 2025-26 (see README). It stops

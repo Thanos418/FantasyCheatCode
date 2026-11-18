@@ -634,3 +634,49 @@ beta 0.25 to 1 by stat, gamma 0.005 beyond 10 points. Market, 16,146 DraftKings 
 - Bets view: a night that loads is logged at once (`logBoard`); "Track record" grades what finished
   (nights before today, ET) when it opens and at most every 5 minutes after; "I placed this" in a pick's
   card stores the stake (remove: unplaced, or deleted if it was never a value pick).
+
+# Phase 5 — DraftKings moves and price history (Nov 18 2026)
+
+Fitted and tested with `tools/backtest_open.js` on DraftKings' opening and closing lines, which ESPN keeps
+for the season in progress (each propBets item has `open` next to `current`).
+
+## web/bets.js
+
+- `parseEspnProps`: a ladder run is kept only if it fits the main line (lo/hi = the smaller/larger devigged
+  side, since the pair may still be the wrong way round): rungs below `floor(line)` need `1/dec ≥ hi − 0.05`,
+  the rung at `floor(line)` `≥ lo − 0.05`, rungs from `floor(line) + 2` `≤ hi + 0.05`. It drops lone runs from
+  another period ("2+ rebounds" at 2.58 next to an over 4.5), which the multi-run check let through.
+- `price()`: `anchor.open = { line, pOver (devigged), mu }` from DraftKings' opening price when ESPN has it;
+  `anchor.move = mu − open.mu` when the line changed or the devigged over moved by `MOVED` (0.04), else 0.
+  `early` = open line equals the current one and the devigged over is within 0.01: the weight is then
+  `P.weightEarly[m]` (0 when absent) instead of `P.weight[m]`. Every bet gets `withMove`: a book other than
+  the anchor, on the side of the move (over and ladders for a move up, under for a move down).
+  Returns `{ ..., early }`.
+- `DEFAULTS.weightEarly = { reb 0.2, ast 0.3, tpm 0.25, stl 0.4, blk 0.3, ra 0.15 }` (fitted on all days;
+  even/odd folds disagree for steals and blocks, 0 and 0.5).
+
+## Bets view, track record
+
+- The value list puts `withMove` bets first (stable sort, EV order within); cards tag "DK moved a → b" and
+  "Early" (when `pr.early && pr.w > 0`).
+- Records carry `withMove` and `early` from the first sighting. `timing(rec)` = `3h+ | 1-3h | under 1h |
+  unknown` from `start − first.at`. `summary()` adds `byTiming` and `byMove` (`moved | early | other`).
+
+## tools/snapshots.js
+
+- Logging: `loadNight` through the local server (direct when it is down), `buildBoard(night, statfactors)`,
+  every bet as `{ t, k: athlete|m, g, b, s, l, d }`, appended to `data/snapshots/<ET date>.jsonl` only when
+  `d` changed; a price gone from a book that loaded is written with `d: null` (books in `night.errors` and
+  games under way are left alone); then `{ t, snap: 1, starts, errors }`. On start the file is replayed for
+  the last-known prices. Each snapshot also runs `fromBoard` + `merge` into the track record. `--every N`
+  repeats until the night's last game has started.
+- `report`: replays every finished night; at each snapshot, per player and stat with a DraftKings line,
+  `price()` with no projection; the first sighting of every Betano / Betclic bet with `ev > 0` (not suspect
+  or far) is an opportunity `{ ev, dec, at, lastSeen, dkMoved }` (`dkMoved`: DraftKings' mean moved 0.25+
+  since the last snapshot while this price did not). Graded against ESPN's closing DraftKings props
+  (closing-line value as in the track record) and the box score (tools/props_data.js).
+
+## Server
+
+- `public_get`: a 401/403 from a public source is `502 refused` ("<source> refused the request…"), not the
+  ESPN cookie message.

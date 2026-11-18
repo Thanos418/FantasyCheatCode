@@ -206,12 +206,13 @@
 
     function listHTML() {
       const all = picks();
-      const value = all.filter((p) => p.ev > 0);
+      // Bets on the side DraftKings moved towards come first: the book has not caught up yet.
+      const value = all.filter((p) => p.ev > 0).sort((a, b) => (b.withMove ? 1 : 0) - (a.withMove ? 1 : 0));
       const head = (t, sub) => '<div class="wp-sec-h"><h2 id="h-value">' + t + '</h2><p>' + sub + '</p></div>';
       if (!all.length) return head('Value', 'Nothing matches these filters.') + '<div class="wp-empty"><p>Try another book or stat, or clear the search.</p></div>';
       let out;
       if (value.length) {
-        out = head(value.length + (value.length === 1 ? ' bet pays' : ' bets pay') + ' more than fair', 'Best first: the extra you expect back per euro staked. Fair odds come from DraftKings’ line without its margin, with overs marked down by how often they have fallen short this season.');
+        out = head(value.length + (value.length === 1 ? ' bet pays' : ' bets pay') + ' more than fair', 'Bets DraftKings has moved towards come first (marked “DK moved”), then best first: the extra you expect back per euro staked. Fair odds come from DraftKings’ line without its margin, with overs marked down by how often they have fallen short this season.');
         out += cards(value);
       } else {
         out = head('No value right now', 'No price here pays more than its fair odds. These come closest; the fair odds tell you what another book would need to pay.');
@@ -236,7 +237,7 @@
         '<button type="button" class="wpb-cardbtn" data-bact="open" data-key="' + esc(p.key) + '" aria-expanded="' + open + '">' +
         '<span class="wpb-ev"><b>' + evText(p.ev) + '</b><small>expected</small></span>' +
         '<span class="wpb-what"><span class="wpb-name">' + esc(L.name) + inj + '</span>' +
-        '<span class="wpb-bet"><b>' + esc(M.label) + ' · ' + esc(sideText(p)) + '</b></span>' +
+        '<span class="wpb-bet"><b>' + esc(M.label) + ' · ' + esc(sideText(p)) + '</b>' + tagsHTML(p) + '</span>' +
         '<span class="wpb-ctx">' + esc(L.ctx.team) + (L.ctx.home ? ' v ' : ' @ ') + esc(L.ctx.opp) + ' · ' + esc(clock(L.game.start)) + '</span></span>' +
         '<span class="wpb-price"><span class="wpb-book">' + esc(p.book) + '</span><b class="wpb-dec">' + dec2(p.dec) + '</b>' +
         '<small>fair ' + dec2(1 / p.p) + ' · ' + pct(p.p) + '</small></span>' +
@@ -245,6 +246,19 @@
         '</button>' +
         (open ? '<div class="wpb-deep">' + deepHTML(p) + '</div>' : '') +
         '</li>';
+    }
+
+    // "DK moved": DraftKings has moved since it opened, towards this bet. "Early": it has not moved yet,
+    // so our projection counts for more in the fair price.
+    function tagsHTML(p) {
+      const pr = p.entry.pr, a = pr.anchor;
+      let h = '';
+      if (p.withMove && a && a.open) {
+        const what = a.open.line !== a.line ? a.open.line + ' → ' + a.line : (a.move > 0 ? 'over' : 'under') + ' shortened';
+        h += '<span class="wpb-move" title="DraftKings opened at ' + esc(String(a.open.line)) + ' and has moved towards this bet; ' + esc(p.book) + ' still pays the old price">DK moved ' + esc(what) + '</span>';
+      }
+      if (pr.early && pr.w > 0) h += '<span class="wpb-move is-early" title="DraftKings has not moved since it opened: our projection counts for ' + Math.round(pr.w * 100) + '% of the fair price">Early</span>';
+      return h;
     }
 
     /* ------------------------------------------------------- the deep dive */
@@ -466,7 +480,7 @@
     }
 
     function footHTML() {
-      return '<footer class="wp-colophon wpb-foot"><p><b>How the price is set.</b> DraftKings’ line with its margin taken off, then overs marked down: this season they went over less often than DraftKings priced them (by 2.5 points on points, 3.5 on PRA, 4 on steals). A distribution fitted on 16,146 closing lines turns that into a chance for every line and ladder rung, and rungs far from the line are shown but not ranked. Our own projection moves the price only for rebounds; for every other stat the market alone was better.</p>' +
+      return '<footer class="wp-colophon wpb-foot"><p><b>How the price is set.</b> DraftKings’ line with its margin taken off, then overs marked down: this season they went over less often than DraftKings priced them (by 2.5 points on points, 3.5 on PRA, 4 on steals). A distribution fitted on 16,146 closing lines turns that into a chance for every line and ladder rung, and rungs far from the line are shown but not ranked. Our own projection moves the price for rebounds only, once DraftKings has moved; while its line is still at its opening price (“Early”) the projection also counts for rebounds, assists, 3s, steals, blocks and rebounds + assists, where it saw the closing line coming. Bets marked “DK moved” are on the side DraftKings moved towards, at a book that has not followed: in the backtest that old line returned +6.7%.</p>' +
         '<p><b>What the backtest found.</b> At DraftKings’ closing odds, nothing won: betting on our projections lost 6%, Linemaker’s rule (overs against the 5 weakest defences, unders against the 5 best) lost 6%, and betting overs after 7 hits in 10 lost 11%. So value here is a book paying more than DraftKings’ fair price. Expected value is an average over many bets; any one bet can lose. Bet only what you can afford to lose.</p></footer>';
     }
 
@@ -509,7 +523,9 @@
           '</tbody></table></section>';
       };
       const SIDE = { over: 'Overs', under: 'Unders', ladder: 'Ladders (X+)' };
-      const breaks = [brk('By book', sum.byBook, (k) => k), brk('By stat', sum.byStat, (k) => B().MARKETS[k] ? B().MARKETS[k].label : k), brk('By bet', sum.bySide, (k) => SIDE[k] || k)].filter(Boolean).join('');
+      const MOVE = { moved: 'DraftKings had moved towards it', early: 'Early: DraftKings not moved yet', other: 'Other' };
+      const breaks = [brk('By book', sum.byBook, (k) => k), brk('By stat', sum.byStat, (k) => B().MARKETS[k] ? B().MARKETS[k].label : k), brk('By bet', sum.bySide, (k) => SIDE[k] || k),
+        brk('By time before tip-off', sum.byTiming, (k) => k), brk('By DraftKings when logged', sum.byMove, (k) => MOVE[k] || k)].filter(Boolean).join('');
       return '<section class="wp-sec wpb-record" aria-labelledby="h-record"><div class="wp-sec-h"><h2 id="h-record">Track record</h2>' +
         '<p>Every value pick shown at Betano or Betclic, at the price when it first appeared, graded from the box score the day after. Profit counts one unit on every pick; your bets count your stakes.' + (S.rec.loading ? ' <span class="wpb-dim" id="wpb-msg">' + esc(S.rec.msg) + '</span>' : '') + '</p></div>' +
         tiles + seriesSVG(sum.series) + note +

@@ -108,6 +108,8 @@ async function serverUp() {
     const line = (name, g) => Object.keys(g).forEach((k) => { const x = g[k]; if (x.settled) out('    ' + (name(k) + '                  ').slice(0, 20) + x.win + '-' + x.loss + '  ' + un(x.units).padStart(9) + '  closing ' + pc(x.clvAvg)); });
     out('  By book:'); line((k) => k, s.byBook);
     out('  By stat:'); line((k) => (B.MARKETS[k] ? B.MARKETS[k].label : k), s.byStat);
+    out('  By time before tip-off:'); line((k) => k, s.byTiming);
+    out('  By DraftKings when logged:'); line((k) => ({ moved: 'had moved to it', early: 'early, not moved' }[k] || k), s.byMove);
   }
   const p = s.placed;
   if (p.n) out('\nYour bets: ' + p.n + ' placed, ' + p.settled + ' settled' + (p.settled ? ': €' + p.staked.toFixed(2) + ' staked, ' + (p.profit >= 0 ? '+' : '-') + '€' + Math.abs(p.profit).toFixed(2) + ' (' + pc(p.roi) + ')' : '') + (p.pending ? ', €' + p.open.toFixed(2) + ' still open' : ''));

@@ -112,3 +112,22 @@ test('summary: units, record, closing-line value and your stakes', () => {
   near(s.placed.profit, 10 - 5);
   assert.strictEqual(s.byBook.Betano.n, 4);
 });
+
+test('records say how long before tip-off and whether DraftKings had moved; the summary splits on both', () => {
+  const b = board([{ book: 'Betano', side: 'over', line: 23.5, dec: 2.2, p: 0.5, ev: 0.1, withMove: true }]);
+  b.picks[0].entry.pr.early = true; b.picks[0].entry.pr.w = 0.2; // would be early, but the move comes first
+  const r = K.fromBoard(b, NIGHT, NOW)[0];
+  assert.deepStrictEqual([r.withMove, r.early], [true, true]);
+  assert.strictEqual(K.timing(r), '1-3h'); // tip-off an hour after NOW
+  assert.strictEqual(K.timing(Object.assign({}, r, { start: NOW + 4 * 3600e3 })), '3h+');
+  assert.strictEqual(K.timing(Object.assign({}, r, { start: NOW + 20 * 60e3 })), 'under 1h');
+  assert.strictEqual(K.timing(Object.assign({}, r, { start: null })), 'unknown');
+  const log = {
+    a: rec({ id: 'a', start: NOW + 3600e3, withMove: true, result: { outcome: 'win', v: 20 } }),
+    b: rec({ id: 'b', start: NOW + 5 * 3600e3, early: true, result: { outcome: 'loss', v: 30 } }),
+    c: rec({ id: 'c', start: NOW + 5 * 3600e3 }),
+  };
+  const s = K.summary(log);
+  assert.deepStrictEqual(Object.keys(s.byTiming).sort(), ['1-3h', '3h+']);
+  assert.deepStrictEqual([s.byMove.moved.n, s.byMove.early.n, s.byMove.other.n], [1, 1, 1]);
+});
